@@ -11,23 +11,23 @@
 
 // require_once plugin_dir_path(__FILE__) . 'includes/plugin-update-checker-master/plugin-update-checker.php';
 
-$file = plugin_dir_path(__FILE__) . 'includes/plugin-update-checker-master/plugin-update-checker.php';
-if (!file_exists($file)) {
-    die('File not found: ' . $file);
-}
-require_once $file;
+// $file = plugin_dir_path(__FILE__) . 'includes/plugin-update-checker-master/plugin-update-checker.php';
+// if (!file_exists($file)) {
+//     die('File not found: ' . $file);
+// }
+// require_once $file;
 
-if (!class_exists('PucFactory')) {
-    die('PucFactory class not found.');
-}
+// if (!class_exists('PucFactory')) {
+//     die('PucFactory class not found.');
+// }
 
-$update_checker = PucFactory::buildUpdateChecker(
-    'https://github.com/ecompw/openai',
-    __FILE__,
-    'openai/openai.php'  // plugin-folder/plugin-main-file in lowercase folder name
-);
+// $update_checker = PucFactory::buildUpdateChecker(
+//     'https://github.com/ecompw/openai',
+//     __FILE__,
+//     'openai/openai.php'  // plugin-folder/plugin-main-file in lowercase folder name
+// );
 
-$update_checker->setBranch('main');
+// $update_checker->setBranch('main');
 
 if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
