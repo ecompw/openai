@@ -1,14 +1,22 @@
 <?php
 /*
  Plugin Name: OpenAI Auto Post
- Plugin URI: https://github.com/ecompw/autoposter
+ Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
  Version: 1.9
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
  */
-
+register_shutdown_function(function () {
+    $error = error_get_last();
+    if ($error !== null) {
+        echo '<pre style="color:red">';
+        echo "Fatal error detected in plugin activation:\n";
+        print_r($error);
+        echo '</pre>';
+    }
+});
 require_once plugin_dir_path(__FILE__) . 'includes/plugin-update-checker/plugin-update-checker.php';
 
 if (!class_exists('PucFactory')) {
