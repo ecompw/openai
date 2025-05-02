@@ -24,7 +24,7 @@ if (!class_exists('PucFactory')) {
 }
 
 $update_checker = PucFactory::buildUpdateChecker(
-    'https://github.com/ecompw/autoposter',
+    'https://github.com/ecompw/openai',
     __FILE__,
     'openai/openai.php'  // plugin-folder/plugin-main-file in lowercase folder name
 );
