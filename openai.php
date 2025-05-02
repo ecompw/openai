@@ -8,16 +8,14 @@
  License: GPL 3.0
  Text Domain: openai-auto-post
  */
-register_shutdown_function(function () {
-    $error = error_get_last();
-    if ($error !== null) {
-        echo '<pre style="color:red">';
-        echo "Fatal error detected in plugin activation:\n";
-        print_r($error);
-        echo '</pre>';
-    }
-});
-require_once plugin_dir_path(__FILE__) . 'includes/plugin-update-checker/plugin-update-checker.php';
+
+// require_once plugin_dir_path(__FILE__) . 'includes/plugin-update-checker-master/plugin-update-checker.php';
+
+$file = plugin_dir_path(__FILE__) . 'includes/plugin-update-checker-master/plugin-update-checker.php';
+if (!file_exists($file)) {
+    die('File not found: ' . $file);
+}
+require_once $file;
 
 if (!class_exists('PucFactory')) {
     die('PucFactory class not found.');
