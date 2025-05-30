@@ -93,8 +93,8 @@ function get_random_media_image_url() {
     $query = new WP_Query([
         'post_type'      => 'attachment',
         'post_mime_type' => 'image',
-        'post_status'    => 'inherit',  // Ensure visibility
-        'posts_per_page' => -1          // Fetch all image attachments
+        'post_status'    => 'inherit', // Ensure visibility
+        'posts_per_page' => -1 // Fetch all image attachments
     ]);
 
     if ($query->have_posts()) {
@@ -102,19 +102,25 @@ function get_random_media_image_url() {
         while ($query->have_posts()) {
             $query->the_post();
             $image_id = get_the_ID();
-            $image_ids[] = $image_id;  // Collect IDs of images
+            $filename = basename(get_attached_file($image_id));
+            
+            // Skip the image if filename contains "favicon"
+            if (stripos($filename, 'favicon') !== false) {
+                continue;
+            }
+
+            $image_ids[] = $image_id; // Collect IDs of images
         }
         wp_reset_postdata();
 
         if (!empty($image_ids)) {
             $random_image_id = $image_ids[array_rand($image_ids)];
             $image_url = wp_get_attachment_url($random_image_id);
-            return $image_url;  // Return the URL of the selected image
+            return $image_url; // Return the URL of the selected image
         }
     }
-
     openai_auto_post_log("No images found or no media posts to process.");
-    return false;  // Return false if no images found
+    return false; // Return false if no images found
 }
 
 ?>
