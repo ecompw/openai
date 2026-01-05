@@ -30,9 +30,9 @@ function openai_get_generation($api_key, $prompt, $max_tokens = 2048, $proxy = [
         'Authorization: Bearer ' . $api_key,
     ]);
 
-    // Build request payload with GPT-4.1 model
+    // Build request payload with GPT-5 model
     $post_fields = json_encode([
-        'model' => 'gpt-4o-mini', // GPT-4o-mini (official API name)
+        'model' => 'gpt-5-mini',
     'messages' => [
         ['role' => 'system', 'content' => 'You are an expert copywriter. Create clear, compelling, and audience-appropriate content for any topic or purpose.'],
         ['role' => 'user', 'content' => $prompt]
