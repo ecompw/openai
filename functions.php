@@ -32,7 +32,7 @@ function openai_get_generation($api_key, $prompt, $max_tokens = 2048, $proxy = [
 
     // Build request payload with GPT-5 model
     $post_fields = json_encode([
-        'model' => 'gpt-5-mini',
+        'model' => 'gpt-5-mini-2025-08-07',
     'messages' => [
         ['role' => 'system', 'content' => 'You are an expert copywriter. Create clear, compelling, and audience-appropriate content for any topic or purpose.'],
         ['role' => 'user', 'content' => $prompt]
