@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 1.9.5
+ Version: 1.9.6
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -86,7 +86,7 @@ function openai_generate_post() {
     }
 
     // Generate content using API
-    $content_result = openai_get_generation($api_key, $prompt, 2048, $proxy);
+    $content_result = openai_get_generation_gpt5mini($api_key, $prompt, 2048, $proxy);
     if (strpos($content_result, 'Error:') !== false) {
         openai_auto_post_log("Error during content generation: $content_result");
         return '<div class="error"><p>Failed to generate content: ' . $content_result . '</p></div>';

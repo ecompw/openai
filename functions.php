@@ -2,18 +2,32 @@
 
 // Function to log errors or messages for debugging
 function openai_auto_post_log($message) {
-    $log_file = plugin_dir_path(__FILE__) . 'openai-error.log';
+    // Prefer uploads dir to avoid permission issues on many hosts
+    $upload_dir = function_exists('wp_upload_dir') ? wp_upload_dir() : null;
+    $log_file   = ($upload_dir && !empty($upload_dir['basedir']))
+        ? trailingslashit($upload_dir['basedir']) . 'openai-error.log'
+        : __DIR__ . '/openai-error.log';
+
     $current_log = date("Y-m-d H:i:s") . " - " . $message . "\n";
     file_put_contents($log_file, $current_log, FILE_APPEND);
 }
 
-// Function to get content generation from OpenAI (GPT-4.1)
-function openai_get_generation($api_key, $prompt, $max_tokens = 2048, $proxy = []) {
-    $ch = curl_init('https://api.openai.com/v1/chat/completions');
+/**
+ * Generate text with OpenAI using the Responses API (works with models like gpt-5-mini).
+ *
+ * @param string $api_key
+ * @param string $prompt
+ * @param int    $max_output_tokens
+ * @param array  $proxy ['url' => '', 'username' => '', 'password' => '']
+ * @return string
+ */
+function openai_get_generation_gpt5mini($api_key, $prompt, $max_output_tokens = 2048, $proxy = []) {
+    $endpoint = 'https://api.openai.com/v1/responses';
+    $ch = curl_init($endpoint);
+
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 120);
     curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_VERBOSE, true);
 
     // Setup proxy if required
     if (!empty($proxy['url'])) {
@@ -24,22 +38,26 @@ function openai_get_generation($api_key, $prompt, $max_tokens = 2048, $proxy = [
         }
     }
 
-    // Set headers for the OpenAI API
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
         'Content-Type: application/json; charset=UTF-8',
+        'Accept: application/json',
         'Authorization: Bearer ' . $api_key,
     ]);
 
-    // Build request payload with GPT-5 model
-    $post_fields = json_encode([
-        'model' => 'gpt-4.1-mini',
-    'messages' => [
-        ['role' => 'system', 'content' => 'You are an expert copywriter. Create clear, compelling, and audience-appropriate content for any topic or purpose.'],
-        ['role' => 'user', 'content' => $prompt]
-    ],
-    'max_tokens' => $max_tokens
-    ]);
+    // Responses API payload:
+    // - model: gpt-5-mini
+    // - input: role-based array (system + user), similar concept to Chat Completions
+    // - max_output_tokens: equivalent of max_tokens in Responses API
+    $payload = [
+        'model' => 'gpt-5-mini',
+        'input' => [
+            ['role' => 'system', 'content' => 'You are an expert copywriter. Create clear, compelling, and audience-appropriate content for any topic or purpose.'],
+            ['role' => 'user', 'content' => $prompt],
+        ],
+        'max_output_tokens' => (int) $max_output_tokens,
+    ];
 
+    $post_fields = json_encode($payload);
     if ($post_fields === false) {
         openai_auto_post_log("JSON Encoding Error: " . json_last_error_msg());
         return "Failed to encode payload as JSON.";
@@ -47,80 +65,68 @@ function openai_get_generation($api_key, $prompt, $max_tokens = 2048, $proxy = [
 
     curl_setopt($ch, CURLOPT_POSTFIELDS, $post_fields);
 
-    // Capture verbose output
-    $verbose_log = fopen('php://temp', 'rw+');
-    curl_setopt($ch, CURLOPT_STDERR, $verbose_log);
-
-    // Execute API request
     $response = curl_exec($ch);
-
     if ($response === false) {
         $curl_error = curl_error($ch);
         openai_auto_post_log("cURL Error: $curl_error");
-
-        rewind($verbose_log);
-        $verbose_output = stream_get_contents($verbose_log);
-        openai_auto_post_log("cURL Verbose Output: " . $verbose_output);
-
-        fclose($verbose_log);
         curl_close($ch);
-
         return "OpenAI API Error: $curl_error.";
     }
 
     $httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $response_data = json_decode($response, true);
     curl_close($ch);
 
-    if ($httpcode != 200) {
+    $data = json_decode($response, true);
+
+    // Log body when not successful (this is crucial for debugging)
+    if ($httpcode < 200 || $httpcode >= 300) {
+        openai_auto_post_log("HTTP $httpcode from OpenAI. Response body: " . $response);
+
+        if (is_array($data) && isset($data['error']['message'])) {
+            return "OpenAI API Error ($httpcode): " . $data['error']['message'];
+        }
         return "OpenAI API Error: Received HTTP code $httpcode.";
     }
 
-    if (isset($response_data['error'])) {
-        return "API Error: {$response_data['error']['message']}";
+    if (!is_array($data)) {
+        openai_auto_post_log("Invalid JSON response: " . $response);
+        return "OpenAI API Error: Invalid JSON response.";
     }
 
-    if (!empty($response_data['choices'][0]['message']['content'])) {
-        return $response_data['choices'][0]['message']['content'];
-    } else {
-        openai_auto_post_log("Empty response content received.");
-        return "OpenAI API Error: Content not found in response.";
+    // Responses API error format (just in case it returns 200 with an embedded error)
+    if (isset($data['error']['message'])) {
+        return "API Error: {$data['error']['message']}";
     }
-}
 
-// Function to get a random image URL from WordPress Media Library
-function get_random_media_image_url() {
-    $query = new WP_Query([
-        'post_type'      => 'attachment',
-        'post_mime_type' => 'image',
-        'post_status'    => 'inherit', // Ensure visibility
-        'posts_per_page' => -1 // Fetch all image attachments
-    ]);
+    /**
+     * Typical Responses API output shape resembles:
+     * $data['output'][0]['content'][0]['text']
+     * but we parse defensively.
+     */
+    $text = '';
 
-    if ($query->have_posts()) {
-        $image_ids = [];
-        while ($query->have_posts()) {
-            $query->the_post();
-            $image_id = get_the_ID();
-            $filename = basename(get_attached_file($image_id));
-            
-            // Skip the image if filename contains "favicon"
-            if (stripos($filename, 'favicon') !== false) {
+    if (!empty($data['output']) && is_array($data['output'])) {
+        foreach ($data['output'] as $out) {
+            if (empty($out['content']) || !is_array($out['content'])) {
                 continue;
             }
-
-            $image_ids[] = $image_id; // Collect IDs of images
-        }
-        wp_reset_postdata();
-
-        if (!empty($image_ids)) {
-            $random_image_id = $image_ids[array_rand($image_ids)];
-            $image_url = wp_get_attachment_url($random_image_id);
-            return $image_url; // Return the URL of the selected image
+            foreach ($out['content'] as $content_part) {
+                // Common key is 'text'
+                if (!empty($content_part['text']) && is_string($content_part['text'])) {
+                    $text .= $content_part['text'];
+                }
+                // Some variants may use 'type' => 'output_text' with 'text'
+            }
         }
     }
-    openai_auto_post_log("No images found or no media posts to process.");
-    return false; // Return false if no images found
-}
 
+    $text = trim($text);
+
+    if ($text !== '') {
+        return $text;
+    }
+
+    openai_auto_post_log("Empty output text. Full response: " . $response);
+    return "OpenAI API Error: Content not found in response.";
+}
 ?>
