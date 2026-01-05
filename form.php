@@ -1,23 +1,33 @@
 <?php
-// Add a custom cron schedule interval
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+/**
+ * Custom cron schedule interval (only defined here to avoid duplicates)
+ */
 add_filter('cron_schedules', 'openai_custom_cron_schedules');
 function openai_custom_cron_schedules($schedules) {
-    $schedules['every_five_days'] = array(
-        'interval' => 5 * 24 * 60 * 60, // 5 days in seconds
-        'display' => __('Every 5 Days'),
-    );
+    $schedules['every_five_days'] = [
+        'interval' => 5 * DAY_IN_SECONDS,
+        'display'  => __('Every 5 Days', 'openai-auto-post'),
+    ];
     return $schedules;
 }
 
-// Register the scheduled event
-add_action('openai_scheduled_post_event', 'openai_generate_post');
-
-// Callback for the main plugin page
+/**
+ * Callback for the main plugin page
+ */
 function openai_auto_post_callback() {
+    if (!current_user_can('manage_options')) {
+        return;
+    }
+
     if (isset($_POST['generate_post'])) {
-        check_admin_referer('openai_generate_post_nonce'); // Check nonce for security
+        check_admin_referer('openai_generate_post_nonce');
+
         $result = openai_generate_post();
-        echo $result;
+        echo $result; // safe: plugin-generated HTML notices
     }
     ?>
     <div class="wrap">
@@ -31,34 +41,46 @@ function openai_auto_post_callback() {
     <?php
 }
 
-// Callback for the settings page
+/**
+ * Callback for the settings page
+ */
 function openai_auto_post_settings_callback() {
-    if (isset($_POST['save_openai_settings'])) {
-        check_admin_referer('openai_save_settings_nonce'); // Check nonce for security
+    if (!current_user_can('manage_options')) {
+        return;
+    }
 
-        // Retrieve and sanitize inputs
-        $api_key = sanitize_text_field($_POST['openai_api_key']);
-        $prompt = sanitize_textarea_field($_POST['openai_post_prompt']);
-        $interval = sanitize_text_field($_POST['openai_auto_interval']);
-        $proxy = sanitize_text_field($_POST['openai_proxy']);
-        $proxy_username = sanitize_text_field($_POST['openai_proxy_username']);
-        $proxy_password = sanitize_text_field($_POST['openai_proxy_password']);
+    if (isset($_POST['save_openai_settings'])) {
+        check_admin_referer('openai_save_settings_nonce');
+
+        // Sanitize (prompt stored raw to avoid stripping <title> etc.)
+        $api_key        = sanitize_text_field(wp_unslash($_POST['openai_api_key'] ?? ''));
+        $prompt         = (string) wp_unslash($_POST['openai_post_prompt'] ?? '');
+        $interval       = sanitize_key(wp_unslash($_POST['openai_auto_interval'] ?? 'every_five_days'));
+        $proxy          = sanitize_text_field(wp_unslash($_POST['openai_proxy'] ?? ''));
+        $proxy_username = sanitize_text_field(wp_unslash($_POST['openai_proxy_username'] ?? ''));
+        $proxy_password = sanitize_text_field(wp_unslash($_POST['openai_proxy_password'] ?? ''));
 
         // Fetch or create the settings post
         $settings_posts = get_posts([
-            'post_type' => 'openai_settings',
-            'post_status' => 'publish',
-            'numberposts' => 1
+            'post_type'      => 'openai_settings',
+            'post_status'    => 'publish',
+            'posts_per_page' => 1,
+            'no_found_rows'  => true,
         ]);
 
         if (empty($settings_posts)) {
             $post_id = wp_insert_post([
-                'post_title' => 'OpenAI Settings',
+                'post_title'  => 'OpenAI Settings',
                 'post_status' => 'publish',
-                'post_type' => 'openai_settings',
-            ]);
+                'post_type'   => 'openai_settings',
+            ], true);
+
+            if (is_wp_error($post_id)) {
+                echo '<div class="error"><p>Failed to create settings post: ' . esc_html($post_id->get_error_message()) . '</p></div>';
+                return;
+            }
         } else {
-            $post_id = $settings_posts[0]->ID;
+            $post_id = (int) $settings_posts[0]->ID;
         }
 
         // Update post meta
@@ -69,17 +91,15 @@ function openai_auto_post_settings_callback() {
         update_post_meta($post_id, 'openai_proxy_username', $proxy_username);
         update_post_meta($post_id, 'openai_proxy_password', $proxy_password);
 
-        echo '<div class="updated"><p>Settings saved! Generating first post...</p></div>';
-        $result = openai_generate_post();
-        echo $result;
+        echo '<div class="updated"><p>Settings saved!</p></div>';
 
-        // Define valid intervals and fallback
-        $valid_intervals = array('hourly', 'twicedaily', 'daily', 'every_five_days');
-        if (!in_array($interval, $valid_intervals)) {
-            $interval = 'daily'; // Default fallback
+        // Validate interval
+        $valid_intervals = ['hourly', 'twicedaily', 'daily', 'every_five_days'];
+        if (!in_array($interval, $valid_intervals, true)) {
+            $interval = 'daily';
         }
 
-        // Schedule future posts
+        // Reschedule future posts
         if (wp_next_scheduled('openai_scheduled_post_event')) {
             wp_clear_scheduled_hook('openai_scheduled_post_event');
         }
@@ -88,25 +108,27 @@ function openai_auto_post_settings_callback() {
 
     // Retrieve saved settings
     $settings_posts = get_posts([
-        'post_type' => 'openai_settings',
-        'post_status' => 'publish',
-        'numberposts' => 1
+        'post_type'      => 'openai_settings',
+        'post_status'    => 'publish',
+        'posts_per_page' => 1,
+        'no_found_rows'  => true,
     ]);
 
-    $openai_api_key = '';
-    $openai_post_prompt = '';
-    $openai_auto_interval = 'every_five_days';
-    $openai_proxy = '';
+    $openai_api_key        = '';
+    $openai_post_prompt    = '';
+    $openai_auto_interval  = 'every_five_days';
+    $openai_proxy          = '';
     $openai_proxy_username = '';
     $openai_proxy_password = '';
 
     if (!empty($settings_posts)) {
-        $openai_api_key = get_post_meta($settings_posts[0]->ID, 'openai_api_key', true);
-        $openai_post_prompt = get_post_meta($settings_posts[0]->ID, 'openai_post_prompt', true);
-        $openai_auto_interval = get_post_meta($settings_posts[0]->ID, 'openai_auto_interval', true);
-        $openai_proxy = get_post_meta($settings_posts[0]->ID, 'openai_proxy', true);
-        $openai_proxy_username = get_post_meta($settings_posts[0]->ID, 'openai_proxy_username', true);
-        $openai_proxy_password = get_post_meta($settings_posts[0]->ID, 'openai_proxy_password', true);
+        $sid = (int) $settings_posts[0]->ID;
+        $openai_api_key        = get_post_meta($sid, 'openai_api_key', true);
+        $openai_post_prompt    = get_post_meta($sid, 'openai_post_prompt', true);
+        $openai_auto_interval  = get_post_meta($sid, 'openai_auto_interval', true);
+        $openai_proxy          = get_post_meta($sid, 'openai_proxy', true);
+        $openai_proxy_username = get_post_meta($sid, 'openai_proxy_username', true);
+        $openai_proxy_password = get_post_meta($sid, 'openai_proxy_password', true);
     }
     ?>
     <div class="wrap">
@@ -117,7 +139,7 @@ function openai_auto_post_settings_callback() {
                 <tr valign="top">
                     <th scope="row">OpenAI API Key</th>
                     <td>
-                        <input type="text" name="openai_api_key" value="<?php echo esc_attr($openai_api_key); ?>" size="50" />
+                        <input type="password" name="openai_api_key" value="<?php echo esc_attr($openai_api_key); ?>" size="50" autocomplete="off" />
                     </td>
                 </tr>
                 <tr valign="top">
@@ -154,12 +176,12 @@ function openai_auto_post_settings_callback() {
                 <tr valign="top">
                     <th scope="row">Proxy Password</th>
                     <td>
-                        <input type="text" name="openai_proxy_password" value="<?php echo esc_attr($openai_proxy_password); ?>" size="50" />
+                        <input type="password" name="openai_proxy_password" value="<?php echo esc_attr($openai_proxy_password); ?>" size="50" autocomplete="off" />
                     </td>
                 </tr>
             </table>
             <input type="hidden" name="save_openai_settings" value="1">
-            <button type="submit" class="button button-primary">Save Settings and Generate First Post</button>
+            <button type="submit" class="button button-primary">Save Settings</button>
         </form>
     </div>
     <?php
