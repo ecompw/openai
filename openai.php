@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
 }
 
 /**
- * Plugin Update Checker - СОХРАНЕНО СТРОГО ПО ИНСТРУКЦИИ
+ * Plugin Update Checker - СТРОГО СОХРАНЕНО
  */
 $checker_file = plugin_dir_path(__FILE__) . 'includes/plugin-update-checker-master/plugin-update-checker.php';
 if (file_exists($checker_file)) {
@@ -33,14 +33,14 @@ require_once plugin_dir_path(__FILE__) . 'functions.php';
 require_once plugin_dir_path(__FILE__) . 'form.php';
 
 /**
- * Register settings for REST API
+ * Register settings for REST API and migration support
  */
 add_action('init', function () {
-    // Регистрируем тип поста, чтобы миграция могла найти старые данные
     register_post_type('openai_settings', [
-        'public' => false,
-        'show_ui' => false,
-        'supports' => ['title']
+        'public'              => false,
+        'show_ui'             => false,
+        'capability_type'     => 'post',
+        'supports'            => ['title'],
     ]);
 
     $settings = [
@@ -57,42 +57,51 @@ add_action('init', function () {
 });
 
 /**
- * Миграция данных в wp_options
+ * ЗАПЛАТКА: Автоматическая миграция данных для 500 сайтов
  */
 add_action('admin_init', function () {
-    if (get_option('openai_migration_completed')) {
-        return;
-    }
+    if (get_option('openai_migration_v2_complete')) return;
 
-    $old_settings_posts = get_posts([
-        'post_type'      => 'openai_settings',
-        'posts_per_page' => 1,
-        'post_status'    => 'any'
-    ]);
-
-    if (!empty($old_settings_posts)) {
-        $post_id = $old_settings_posts[0]->ID;
+    $old_settings = get_posts(['post_type' => 'openai_settings', 'posts_per_page' => 1, 'post_status' => 'any']);
+    if (!empty($old_settings)) {
+        $sid = $old_settings[0]->ID;
         $keys = ['openai_api_key', 'openai_post_prompt', 'openai_auto_interval', 'openai_proxy', 'openai_proxy_username', 'openai_proxy_password'];
-
         foreach ($keys as $key) {
-            $old_value = get_post_meta($post_id, $key, true);
-            if ($old_value) {
-                update_option($key, $old_value);
-            }
+            $val = get_post_meta($sid, $key, true);
+            if ($val) update_option($key, $val);
         }
-        update_option('openai_migration_completed', time());
+        update_option('openai_migration_v2_complete', time());
     }
 });
-/**
- * Main generator - ИСПРАВЛЕНО: Читает из options (связь с Django)
- */
+
+function format_response($response) {
+    $response = (string) $response;
+    $response = preg_replace('/\*\*(.*?)\*\*/', '<strong>$1</strong>', $response);
+    $response = preg_replace('/### (.*?)\n/', '<h3>$1</h3>' . "\n", $response);
+    $response = preg_replace('/## (.*?)\n/', '<h2>$1</h2>' . "\n", $response);
+    $response = preg_replace('/# (.*?)\n/', '&nbsp;' . "\n", $response);
+    return $response;
+}
+
+function extract_title_and_body($response_content) {
+    if (preg_match('/<title>(.*?)<\/title>/is', $response_content, $matches)) {
+        $title = trim($matches[1]);
+        $body  = str_replace($matches[0], '', $response_content);
+        return [$title, $body];
+    }
+    return ['', $response_content];
+}
+
 function openai_generate_post() {
+    // СТРОГОЕ СОБЛЮДЕНИЕ ИМЕН ПЕРЕМЕННЫХ И ФУНКЦИЙ
     $api_key      = get_option('openai_api_key');
     $saved_prompt = get_option('openai_post_prompt');
-
     if (empty($api_key) || empty(trim((string) $saved_prompt))) {
         return '<div class="error"><p>API key or prompt not set.</p></div>';
     }
+
+    $prompt_hint = 'Enclose the article title with <title> and </title> tags. Format the output using standard Markdown structure (e.g., headings, bullets, emphasis), but do not enclose the output in Markdown blocks or code formatting. Do not include your comments in the output.';
+    $prompt      = trim((string) $saved_prompt . "\n\n" . $prompt_hint);
 
     $proxy = [
         'url'      => get_option('openai_proxy'),
@@ -100,27 +109,31 @@ function openai_generate_post() {
         'password' => get_option('openai_proxy_password'),
     ];
 
-    // Вызов функции из functions.php
-    $content_result = openai_get_generation_gpt5mini($api_key, $saved_prompt, 2048, $proxy);
+    $content_result = openai_get_generation_gpt5mini($api_key, $prompt, 2048, $proxy);
 
     if (is_string($content_result) && openai_string_starts_with($content_result, 'OpenAI API Error')) {
-        return '<div class="error"><p>' . esc_html($content_result) . '</p></div>';
+        openai_auto_post_log("Error during content generation: $content_result");
+        return '<div class="error"><p>Failed to generate content: ' . esc_html($content_result) . '</p></div>';
     }
-    // ИСПРАВЛЕНО: Добавлены вызовы функций парсинга (теперь они есть в functions.php)
+
     [$article_title, $article_body] = extract_title_and_body(format_response($content_result));
-    
     if (empty($article_title)) {
-        return '<div class="error"><p>Failed to extract title.</p></div>';
+        openai_auto_post_log("Failed to extract title from content.");
+        return '<div class="error"><p>Failed to extract title from content.</p></div>';
     }
+
+    $article_body = format_response($article_body);
 
     $post_id = wp_insert_post([
         'post_title'   => wp_strip_all_tags($article_title),
         'post_content' => wp_kses_post(wpautop($article_body)),
         'post_status'  => 'publish',
         'post_author'  => 1,
-    ]);
+    ], true);
 
-    if (is_wp_error($post_id)) return $post_id->get_error_message();
+    if (is_wp_error($post_id)) {
+        return '<div class="error"><p>Failed to insert post: ' . esc_html($post_id->get_error_message()) . '</p></div>';
+    }
 
     $image_url = get_random_media_image_url();
     if ($image_url) {
@@ -128,7 +141,7 @@ function openai_generate_post() {
         if ($attachment_id) set_post_thumbnail($post_id, (int) $attachment_id);
     }
 
-    return '<div class="updated"><p>Post generated successfully!</p></div>';
+    return '<div class="updated"><p>Post generated and published successfully!</p></div>';
 }
 
 function openai_auto_post_menu() {
