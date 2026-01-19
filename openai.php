@@ -87,64 +87,38 @@ add_action('admin_init', function () {
 });
 
 /**
- * УНИВЕРСАЛЬНЫЙ ПОИСКОВИК "ПУШКА"
- * Ищет первый активный виджет, содержащий ссылки, исключая системные блоки.
+ * 1. ПОИСК И МАРКИРОВКА (Внутренняя функция)
+ * Ищет виджет с ссылками и ставит на него невидимую метку.
  */
-function find_openai_seo_widget() {
-    $sidebars = get_option('sidebars_widgets');
-    if (!is_array($sidebars)) return null;
+function get_openai_marked_widget($force_mark = false) {
+    $widget_options = ['widget_block', 'widget_custom_html', 'widget_text'];
+    $marker = '<!-- USEFUL_LINKS -->';
 
-    // Список того, что мы точно НЕ трогаем
-    $exclude_markers = [
-        'wp-block-search', 'widget_search', 
-        'wp-block-latest-posts', 'widget_recent_entries',
-        'wp-block-archives', 'wp-block-categories', 
-        'wp-block-latest-comments', 'widget_nav_menu'
-    ];
+    foreach ($widget_options as $opt_name) {
+        $data = get_option($opt_name);
+        if (!is_array($data)) continue;
 
-    foreach ($sidebars as $sidebar_id => $widgets) {
-        if ($sidebar_id === 'wp_inactive_widgets' || !is_array($widgets)) continue;
-
-        foreach ($widgets as $widget_id) {
-            $content = '';
-            $option_name = '';
-            $key = '';
-
-            // ОПРЕДЕЛЯЕМ ТИП И ПОЛУЧАЕМ КОНТЕНТ
-            if (strpos($widget_id, 'block-') === 0) {
-                $key = (int) str_replace('block-', '', $widget_id);
-                $option_name = 'widget_block';
-                $data = get_option($option_name);
-                $content = $data[$key]['content'] ?? '';
-            } 
-            elseif (strpos($widget_id, 'custom_html-') === 0) {
-                $key = (int) str_replace('custom_html-', '', $widget_id);
-                $option_name = 'widget_custom_html';
-                $data = get_option($option_name);
-                $content = $data[$key]['content'] ?? '';
-            }
-            elseif (strpos($widget_id, 'text-') === 0) {
-                $key = (int) str_replace('text-', '', $widget_id);
-                $option_name = 'widget_text';
-                $data = get_option($option_name);
-                $content = $data[$key]['text'] ?? ''; // В текстовых виджетах поле называется 'text'
-            }
-
+        foreach ($data as $key => $fields) {
+            if (!is_array($fields)) continue;
+            
+            // Проверяем контент (в разных виджетах поле называется по-разному)
+            $content = $fields['content'] ?? ($fields['text'] ?? '');
             if (empty($content)) continue;
 
-            // ПРОВЕРКА: Это наш виджет?
-            $is_system = false;
-            foreach ($exclude_markers as $marker) {
-                if (strpos($content, $marker) !== false) { $is_system = true; break; }
+            // ШАГ 1: Если метка уже есть — это наш виджет!
+            if (strpos($content, $marker) !== false) {
+                return ['option' => $opt_name, 'key' => $key, 'content' => $content];
             }
 
-            // Если есть ссылка И это не системный блок — МЫ НАШЛИ ЕГО!
-            if (!$is_system && strpos($content, '<a ') !== false) {
-                return [
-                    'option' => $option_name,
-                    'key'    => $key,
-                    'content'=> $content
-                ];
+            // ШАГ 2: Если метки нет, но мы в режиме поиска (force_mark)
+            if ($force_mark && strpos($content, '<a ') !== false && strpos($content, 'wp-block-search') === false) {
+                // Ставим метку и сохраняем
+                $new_content = $content . "\n" . $marker;
+                if (isset($data[$key]['content'])) $data[$key]['content'] = $new_content;
+                else $data[$key]['text'] = $new_content;
+                
+                update_option($opt_name, $data);
+                return ['option' => $opt_name, 'key' => $key, 'content' => $new_content];
             }
         }
     }
@@ -152,43 +126,57 @@ function find_openai_seo_widget() {
 }
 
 /**
- * ГЕТТЕР: Вызывается при запросе из Django
+ * 2. ГЕТТЕР: Вызывается при запросе из Django
  */
 add_filter('option_openai_remote_widget_content', function($value) {
-    $target = find_openai_seo_widget();
+    // Пытаемся найти помеченный виджет, если нет — ищем и помечаем
+    $target = get_openai_marked_widget(true); 
     if (!$target) return '';
 
     $content = $target['content'];
-    // Очищаем от блочных комментариев для чистого отображения в Django
+    // Убираем метку и обертки блоков, чтобы в Django был чистый HTML
+    $content = str_replace('<!-- USEFUL_LINKS -->', '', $content);
     $content = preg_replace('/<!-- \/?wp:html -->/s', '', $content);
+    
     return trim($content);
 });
 
 /**
- * СЕТТЕР: Вызывается при сохранении из Django
+ * 3. СЕТТЕР: Вызывается при сохранении из Django
  */
 add_filter('pre_update_option_openai_remote_widget_content', function($new_value, $old_value) {
     $new_value = wp_unslash($new_value);
-    $target = find_openai_seo_widget();
+    $marker = '<!-- USEFUL_LINKS -->';
+    
+    $target = get_openai_marked_widget(true);
     if (!$target) return $new_value;
 
     $all_data = get_option($target['option']);
     
+    // Формируем финальный контент с меткой
+    $final_content = $new_value . "\n" . $marker;
+
+    // Если это блок, оборачиваем в стандарты WP
     if ($target['option'] === 'widget_block') {
-        // Для блоков всегда добавляем обертку, чтобы WP не ломал верстку
-        $all_data[$target['key']]['content'] = '<!-- wp:html -->' . "\n" . $new_value . "\n" . '<!-- /wp:html -->';
-    } 
-    elseif ($target['option'] === 'widget_text') {
-        $all_data[$target['key']]['text'] = $new_value;
+        $final_content = '<!-- wp:html -->' . "\n" . $final_content . "\n" . '<!-- /wp:html -->';
     }
-    else {
-        $all_data[$target['key']]['content'] = $new_value;
+
+    // Записываем в нужное поле
+    if (isset($all_data[$target['key']]['content'])) {
+        $all_data[$target['key']]['content'] = $final_content;
+    } else {
+        $all_data[$target['key']]['text'] = $final_content;
     }
 
     update_option($target['option'], $all_data);
     return $new_value;
 }, 10, 2);
 
+
+
+add_action('admin_init', function() {
+    get_openai_marked_widget(true);
+});
 
 
 
