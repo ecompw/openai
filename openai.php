@@ -3,29 +3,22 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.2
+ Version: 2.0.3
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
 */
 
-if (!defined('ABSPATH')) {
-    exit;
-}
+if (!defined('ABSPATH')) { exit; }
 
 /**
- * Plugin Update Checker - СТРОГО СОХРАНЕНО
+ * Plugin Update Checker
  */
 $checker_file = plugin_dir_path(__FILE__) . 'includes/plugin-update-checker-master/plugin-update-checker.php';
 if (file_exists($checker_file)) {
     require_once $checker_file;
     if (class_exists('\YahnisElsts\PluginUpdateChecker\v5\PucFactory')) {
-        $update_checker = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
-            'https://github.com/ecompw/openai',
-            __FILE__,
-            'openai'
-        );
-        $update_checker->setBranch('main');
+        \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker('https://github.com/ecompw/openai', __FILE__, 'openai')->setBranch('main');
     }
 }
 
@@ -33,157 +26,136 @@ require_once plugin_dir_path(__FILE__) . 'functions.php';
 require_once plugin_dir_path(__FILE__) . 'form.php';
 
 /**
- * Register settings for REST API and migration support
+ * Регистрация настроек
  */
 add_action('init', function () {
-    register_post_type('openai_settings', [
-        'public'              => false,
-        'show_ui'             => false,
-        'capability_type'     => 'post',
-        'supports'            => ['title'],
-    ]);
-
     $settings = [
-        'openai_api_key', 
-        'openai_post_prompt', 
-        'openai_auto_interval',
-        'openai_proxy', 
-        'openai_proxy_username', 
-        'openai_proxy_password'
+        'openai_api_key', 'openai_post_prompt', 'openai_auto_interval',
+        'openai_proxy', 'openai_proxy_username', 'openai_proxy_password'
     ];
 
-    // Регистрируем основные настройки в цикле
     foreach ($settings as $setting) {
-        register_setting('openai_settings_group', $setting, [
-            'show_in_rest' => true,
-            'type'         => 'string',
-        ]);
+        register_setting('openai_settings_group', $setting, ['show_in_rest' => true, 'type' => 'string']);
     }
 
-    // Регистрируем настройку для виджета ОДИН РАЗ (вне цикла)
+    // ВАЖНО: Добавили 'default', чтобы Django не получал None
     register_setting('openai_settings_group', 'openai_remote_widget_content', [
         'show_in_rest' => true,
         'type'         => 'string',
+        'default'      => 'Виджет еще не определен. Зайдите в админку сайта.'
     ]);
 });
 
-
 /**
- * ЗАПЛАТКА: Автоматическая миграция данных для 500 сайтов
- */
-add_action('admin_init', function () {
-    if (get_option('openai_migration_v2_complete')) return;
-
-    $old_settings = get_posts(['post_type' => 'openai_settings', 'posts_per_page' => 1, 'post_status' => 'any']);
-    if (!empty($old_settings)) {
-        $sid = $old_settings[0]->ID;
-        $keys = ['openai_api_key', 'openai_post_prompt', 'openai_auto_interval', 'openai_proxy', 'openai_proxy_username', 'openai_proxy_password'];
-        foreach ($keys as $key) {
-            $val = get_post_meta($sid, $key, true);
-            if ($val) update_option($key, $val);
-        }
-        update_option('openai_migration_v2_complete', time());
-    }
-});
-
-/**
- * ЯДЕРНЫЙ ПОИСКОВИК: Ищет виджет по количеству ссылок
+ * УЛУЧШЕННЫЙ ПОИСКОВИК: Ищет ТОЛЬКО в активных зонах
  */
 function force_mark_openai_widget() {
     $marker = '<!-- USEFUL_LINKS -->';
-    $types = ['widget_block', 'widget_custom_html', 'widget_text'];
-    
-    $best_option = null;
-    $best_key = null;
+    $sidebars = get_option('sidebars_widgets');
+    if (!is_array($sidebars)) return null;
+
+    $best_target = null;
     $max_links = -1;
 
-    foreach ($types as $type) {
-        $data = get_option($type);
-        if (!is_array($data)) continue;
+    // 1. Сначала ищем, нет ли уже помеченного виджета среди АКТИВНЫХ
+    foreach ($sidebars as $sidebar_id => $widgets) {
+        if ($sidebar_id === 'wp_inactive_widgets' || !is_array($widgets)) continue;
 
-        foreach ($data as $key => $fields) {
-            if (!is_array($fields) || $key === '_multiwidget') continue;
+        foreach ($widgets as $widget_id) {
+            $target = get_widget_data_by_id($widget_id);
+            if ($target && strpos($target['content'], $marker) !== false) {
+                return $target; // Нашли уже помеченный!
+            }
             
-            $content = $fields['content'] ?? ($fields['text'] ?? '');
-            if (empty($content)) continue;
-
-            // Если метка уже стоит, мы нашли цель!
-            if (strpos($content, $marker) !== false) return ['option' => $type, 'key' => $key];
-
-            // Считаем количество ссылок в виджете
-            $link_count = substr_count($content, '<a ');
-            
-            // Исключаем системные блоки (поиск и т.д.)
-            if (strpos($content, 'wp-block-search') !== false) continue;
-
-            // Нам нужен виджет, где ссылок больше всего (обычно это и есть SEO-блок)
-            if ($link_count > $max_links) {
-                $max_links = $link_count;
-                $best_option = $type;
-                $best_key = $key;
+            // Считаем ссылки для выбора лучшего кандидата
+            if ($target && strpos($target['content'], 'wp-block-search') === false) {
+                $links = substr_count($target['content'], '<a ');
+                if ($links > $max_links) {
+                    $max_links = $links;
+                    $best_target = $target;
+                }
             }
         }
     }
 
-    // Если нашли подходящий виджет — клеймим его!
-    if ($best_option && $best_key !== null) {
-        $data = get_option($best_option);
-        $current_content = $data[$best_key]['content'] ?? $data[$best_key]['text'];
+    // 2. Если помеченного нет, помечаем лучшего кандидата
+    if ($best_target) {
+        $all_data = get_option($best_target['option']);
+        $new_content = $best_target['content'] . "\n" . $marker;
+        if ($best_target['option'] === 'widget_block') {
+            $all_data[$best_target['key']]['content'] = $new_content;
+        } else {
+            $all_data[$best_target['key']]['text'] = $new_content;
+        }
         
-        $new_content = $current_content . "\n" . $marker;
-        
-        if (isset($data[$best_key]['content'])) $data[$best_key]['content'] = $new_content;
-        else $data[$best_key]['text'] = $new_content;
-
-        update_option($best_option, $data);
-        return ['option' => $best_option, 'key' => $best_key];
+        update_option($best_target['option'], $all_data);
+        return $best_target;
     }
 
     return null;
 }
 
 /**
- * ГЕТТЕР: Теперь работает через Ядерный Поиск
+ * Вспомогательная функция получения данных виджета по его ID (напр. 'block-10')
+ */
+function get_widget_data_by_id($widget_id) {
+    $option_name = '';
+    $key = '';
+    if (strpos($widget_id, 'block-') === 0) {
+        $option_name = 'widget_block';
+        $key = (int) str_replace('block-', '', $widget_id);
+    } elseif (strpos($widget_id, 'text-') === 0) {
+        $option_name = 'widget_text';
+        $key = (int) str_replace('text-', '', $widget_id);
+    } elseif (strpos($widget_id, 'custom_html-') === 0) {
+        $option_name = 'widget_custom_html';
+        $key = (int) str_replace('custom_html-', '', $widget_id);
+    }
+
+    if ($option_name) {
+        $data = get_option($option_name);
+        $content = $data[$key]['content'] ?? ($data[$key]['text'] ?? '');
+        if ($content) return ['option' => $option_name, 'key' => $key, 'content' => $content];
+    }
+    return null;
+}
+
+/**
+ * ГЕТТЕР
  */
 add_filter('option_openai_remote_widget_content', function($value) {
     $target = force_mark_openai_widget();
-    if (!$target) return 'ВИДЖЕТ НЕ НАЙДЕН';
+    if (!$target) return 'ВИДЖЕТ НЕ НАЙДЕН (НЕТ АКТИВНЫХ БЛОКОВ)';
 
     $data = get_option($target['option']);
     $content = $data[$target['key']]['content'] ?? $data[$target['key']]['text'];
-    
     $content = str_replace('<!-- USEFUL_LINKS -->', '', $content);
-    $content = preg_replace('/<!-- \/?wp:html -->/s', '', $content);
-    return trim($content);
+    return trim(preg_replace('/<!-- \/?wp:html -->/s', '', $content));
 });
 
 /**
- * СЕТТЕР: Сохраняет точно в цель
+ * СЕТТЕР
  */
 add_filter('pre_update_option_openai_remote_widget_content', function($new_value, $old_value) {
     $new_value = wp_unslash($new_value);
     $target = force_mark_openai_widget();
     if (!$target) return $new_value;
 
-    $data = get_option($target['option']);
+    $all_data = get_option($target['option']);
     $final_content = $new_value . "\n" . '<!-- USEFUL_LINKS -->';
 
     if ($target['option'] === 'widget_block') {
         $final_content = '<!-- wp:html -->' . "\n" . $final_content . "\n" . '<!-- /wp:html -->';
+        $all_data[$target['key']]['content'] = $final_content;
+    } else {
+        $all_data[$target['key']]['text'] = $final_content;
     }
 
-    if (isset($data[$target['key']]['content'])) $data[$target['key']]['content'] = $final_content;
-    else $data[$target['key']]['text'] = $final_content;
-
-    update_option($target['option'], $data);
+    update_option($target['option'], $all_data);
     return $new_value;
 }, 10, 2);
 
-// Запускаем поиск при каждом заходе в админку или на сайт (для теста)
 add_action('init', 'force_mark_openai_widget');
-
-
-
 
 function format_response($response) {
     $response = (string) $response;
