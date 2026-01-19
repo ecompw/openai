@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 1.9.8
+ Version: 2.0.0
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -44,17 +44,29 @@ add_action('init', function () {
     ]);
 
     $settings = [
-        'openai_api_key', 'openai_post_prompt', 'openai_auto_interval',
-        'openai_proxy', 'openai_proxy_username', 'openai_proxy_password'
+        'openai_api_key', 
+        'openai_post_prompt', 
+        'openai_auto_interval',
+        'openai_proxy', 
+        'openai_proxy_username', 
+        'openai_proxy_password'
     ];
 
+    // Регистрируем основные настройки в цикле
     foreach ($settings as $setting) {
         register_setting('openai_settings_group', $setting, [
             'show_in_rest' => true,
             'type'         => 'string',
         ]);
     }
+
+    // Регистрируем настройку для виджета ОДИН РАЗ (вне цикла)
+    register_setting('openai_settings_group', 'openai_remote_widget_content', [
+        'show_in_rest' => true,
+        'type'         => 'string',
+    ]);
 });
+
 
 /**
  * ЗАПЛАТКА: Автоматическая миграция данных для 500 сайтов
@@ -73,6 +85,113 @@ add_action('admin_init', function () {
         update_option('openai_migration_v2_complete', time());
     }
 });
+
+/**
+ * УНИВЕРСАЛЬНЫЙ ПОИСКОВИК "ПУШКА"
+ * Ищет первый активный виджет, содержащий ссылки, исключая системные блоки.
+ */
+function find_openai_seo_widget() {
+    $sidebars = get_option('sidebars_widgets');
+    if (!is_array($sidebars)) return null;
+
+    // Список того, что мы точно НЕ трогаем
+    $exclude_markers = [
+        'wp-block-search', 'widget_search', 
+        'wp-block-latest-posts', 'widget_recent_entries',
+        'wp-block-archives', 'wp-block-categories', 
+        'wp-block-latest-comments', 'widget_nav_menu'
+    ];
+
+    foreach ($sidebars as $sidebar_id => $widgets) {
+        if ($sidebar_id === 'wp_inactive_widgets' || !is_array($widgets)) continue;
+
+        foreach ($widgets as $widget_id) {
+            $content = '';
+            $option_name = '';
+            $key = '';
+
+            // ОПРЕДЕЛЯЕМ ТИП И ПОЛУЧАЕМ КОНТЕНТ
+            if (strpos($widget_id, 'block-') === 0) {
+                $key = (int) str_replace('block-', '', $widget_id);
+                $option_name = 'widget_block';
+                $data = get_option($option_name);
+                $content = $data[$key]['content'] ?? '';
+            } 
+            elseif (strpos($widget_id, 'custom_html-') === 0) {
+                $key = (int) str_replace('custom_html-', '', $widget_id);
+                $option_name = 'widget_custom_html';
+                $data = get_option($option_name);
+                $content = $data[$key]['content'] ?? '';
+            }
+            elseif (strpos($widget_id, 'text-') === 0) {
+                $key = (int) str_replace('text-', '', $widget_id);
+                $option_name = 'widget_text';
+                $data = get_option($option_name);
+                $content = $data[$key]['text'] ?? ''; // В текстовых виджетах поле называется 'text'
+            }
+
+            if (empty($content)) continue;
+
+            // ПРОВЕРКА: Это наш виджет?
+            $is_system = false;
+            foreach ($exclude_markers as $marker) {
+                if (strpos($content, $marker) !== false) { $is_system = true; break; }
+            }
+
+            // Если есть ссылка И это не системный блок — МЫ НАШЛИ ЕГО!
+            if (!$is_system && strpos($content, '<a ') !== false) {
+                return [
+                    'option' => $option_name,
+                    'key'    => $key,
+                    'content'=> $content
+                ];
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * ГЕТТЕР: Вызывается при запросе из Django
+ */
+add_filter('option_openai_remote_widget_content', function($value) {
+    $target = find_openai_seo_widget();
+    if (!$target) return '';
+
+    $content = $target['content'];
+    // Очищаем от блочных комментариев для чистого отображения в Django
+    $content = preg_replace('/<!-- \/?wp:html -->/s', '', $content);
+    return trim($content);
+});
+
+/**
+ * СЕТТЕР: Вызывается при сохранении из Django
+ */
+add_filter('pre_update_option_openai_remote_widget_content', function($new_value, $old_value) {
+    $new_value = wp_unslash($new_value);
+    $target = find_openai_seo_widget();
+    if (!$target) return $new_value;
+
+    $all_data = get_option($target['option']);
+    
+    if ($target['option'] === 'widget_block') {
+        // Для блоков всегда добавляем обертку, чтобы WP не ломал верстку
+        $all_data[$target['key']]['content'] = '<!-- wp:html -->' . "\n" . $new_value . "\n" . '<!-- /wp:html -->';
+    } 
+    elseif ($target['option'] === 'widget_text') {
+        $all_data[$target['key']]['text'] = $new_value;
+    }
+    else {
+        $all_data[$target['key']]['content'] = $new_value;
+    }
+
+    update_option($target['option'], $all_data);
+    return $new_value;
+}, 10, 2);
+
+
+
+
 
 function format_response($response) {
     $response = (string) $response;
