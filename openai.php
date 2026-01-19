@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.3
+ Version: 2.0.4
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -47,27 +47,26 @@ add_action('init', function () {
 });
 
 /**
- * УЛУЧШЕННЫЙ ПОИСКОВИК: Ищет ТОЛЬКО в активных зонах
+ * УЛУЧШЕННЫЙ ПОИСКОВИК + СИНХРОНИЗАТОР
  */
-function force_mark_openai_widget() {
+function sync_openai_widget_data() {
     $marker = '<!-- USEFUL_LINKS -->';
     $sidebars = get_option('sidebars_widgets');
-    if (!is_array($sidebars)) return null;
+    if (!is_array($sidebars)) return;
 
     $best_target = null;
     $max_links = -1;
 
-    // 1. Сначала ищем, нет ли уже помеченного виджета среди АКТИВНЫХ
+    // 1. Ищем уже помеченный виджет в активных зонах
     foreach ($sidebars as $sidebar_id => $widgets) {
         if ($sidebar_id === 'wp_inactive_widgets' || !is_array($widgets)) continue;
-
         foreach ($widgets as $widget_id) {
             $target = get_widget_data_by_id($widget_id);
             if ($target && strpos($target['content'], $marker) !== false) {
-                return $target; // Нашли уже помеченный!
+                $best_target = $target;
+                break 2; 
             }
-            
-            // Считаем ссылки для выбора лучшего кандидата
+            // Считаем ссылки для выбора кандидата
             if ($target && strpos($target['content'], 'wp-block-search') === false) {
                 $links = substr_count($target['content'], '<a ');
                 if ($links > $max_links) {
@@ -78,84 +77,68 @@ function force_mark_openai_widget() {
         }
     }
 
-    // 2. Если помеченного нет, помечаем лучшего кандидата
     if ($best_target) {
-        $all_data = get_option($best_target['option']);
-        $new_content = $best_target['content'] . "\n" . $marker;
-        if ($best_target['option'] === 'widget_block') {
-            $all_data[$best_target['key']]['content'] = $new_content;
-        } else {
-            $all_data[$best_target['key']]['text'] = $new_content;
+        // Если метки еще нет — ставим её
+        if (strpos($best_target['content'], $marker) === false) {
+            $all_data = get_option($best_target['option']);
+            $new_content = $best_target['content'] . "\n" . $marker;
+            if ($best_target['option'] === 'widget_block') {
+                $all_data[$best_target['key']]['content'] = $new_content;
+            } else {
+                $all_data[$best_target['key']]['text'] = $new_content;
+            }
+            update_option($best_target['option'], $all_data);
+            $best_target['content'] = $new_content;
         }
+
+        // ФИЗИЧЕСКИ обновляем опцию, которую читает Django
+        $clean_content = str_replace($marker, '', $best_target['content']);
+        $clean_content = trim(preg_replace('/<!-- \/?wp:html -->/s', '', $clean_content));
         
-        update_option($best_target['option'], $all_data);
-        return $best_target;
+        // Чтобы избежать бесконечного цикла, обновляем только если значение изменилось
+        if (get_option('openai_remote_widget_content') !== $clean_content) {
+            update_option('openai_remote_widget_content', $clean_content);
+        }
     }
-
-    return null;
 }
 
 /**
- * Вспомогательная функция получения данных виджета по его ID (напр. 'block-10')
- */
-function get_widget_data_by_id($widget_id) {
-    $option_name = '';
-    $key = '';
-    if (strpos($widget_id, 'block-') === 0) {
-        $option_name = 'widget_block';
-        $key = (int) str_replace('block-', '', $widget_id);
-    } elseif (strpos($widget_id, 'text-') === 0) {
-        $option_name = 'widget_text';
-        $key = (int) str_replace('text-', '', $widget_id);
-    } elseif (strpos($widget_id, 'custom_html-') === 0) {
-        $option_name = 'widget_custom_html';
-        $key = (int) str_replace('custom_html-', '', $widget_id);
-    }
-
-    if ($option_name) {
-        $data = get_option($option_name);
-        $content = $data[$key]['content'] ?? ($data[$key]['text'] ?? '');
-        if ($content) return ['option' => $option_name, 'key' => $key, 'content' => $content];
-    }
-    return null;
-}
-
-/**
- * ГЕТТЕР
- */
-add_filter('option_openai_remote_widget_content', function($value) {
-    $target = force_mark_openai_widget();
-    if (!$target) return 'ВИДЖЕТ НЕ НАЙДЕН (НЕТ АКТИВНЫХ БЛОКОВ)';
-
-    $data = get_option($target['option']);
-    $content = $data[$target['key']]['content'] ?? $data[$target['key']]['text'];
-    $content = str_replace('<!-- USEFUL_LINKS -->', '', $content);
-    return trim(preg_replace('/<!-- \/?wp:html -->/s', '', $content));
-});
-
-/**
- * СЕТТЕР
+ * СЕТТЕР: Когда Django присылает новый код, мы пишем его ПРЯМО в виджет
  */
 add_filter('pre_update_option_openai_remote_widget_content', function($new_value, $old_value) {
     $new_value = wp_unslash($new_value);
-    $target = force_mark_openai_widget();
-    if (!$target) return $new_value;
-
-    $all_data = get_option($target['option']);
-    $final_content = $new_value . "\n" . '<!-- USEFUL_LINKS -->';
-
-    if ($target['option'] === 'widget_block') {
-        $final_content = '<!-- wp:html -->' . "\n" . $final_content . "\n" . '<!-- /wp:html -->';
-        $all_data[$target['key']]['content'] = $final_content;
-    } else {
-        $all_data[$target['key']]['text'] = $final_content;
+    $marker = '<!-- USEFUL_LINKS -->';
+    
+    // Сначала находим, куда писать
+    $sidebars = get_option('sidebars_widgets');
+    $target = null;
+    foreach ($sidebars as $sidebar_id => $widgets) {
+        if ($sidebar_id === 'wp_inactive_widgets' || !is_array($widgets)) continue;
+        foreach ($widgets as $widget_id) {
+            $data = get_widget_data_by_id($widget_id);
+            if ($data && strpos($data['content'], $marker) !== false) {
+                $target = $data; break 2;
+            }
+        }
     }
 
-    update_option($target['option'], $all_data);
+    if ($target) {
+        $all_data = get_option($target['option']);
+        $final_content = $new_value . "\n" . $marker;
+        if ($target['option'] === 'widget_block') {
+            $final_content = '<!-- wp:html -->' . "\n" . $final_content . "\n" . '<!-- /wp:html -->';
+            $all_data[$target['key']]['content'] = $final_content;
+        } else {
+            $all_data[$target['key']]['text'] = $final_content;
+        }
+        update_option($target['option'], $all_data);
+    }
+
     return $new_value;
 }, 10, 2);
 
-add_action('init', 'force_mark_openai_widget');
+// Запускаем синхронизацию при каждом обращении
+add_action('init', 'sync_openai_widget_data');
 
 function format_response($response) {
     $response = (string) $response;
