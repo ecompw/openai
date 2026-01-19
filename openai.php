@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.1
+ Version: 2.0.2
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -87,96 +87,100 @@ add_action('admin_init', function () {
 });
 
 /**
- * 1. ПОИСК И МАРКИРОВКА (Внутренняя функция)
- * Ищет виджет с ссылками и ставит на него невидимую метку.
+ * ЯДЕРНЫЙ ПОИСКОВИК: Ищет виджет по количеству ссылок
  */
-function get_openai_marked_widget($force_mark = false) {
-    $widget_options = ['widget_block', 'widget_custom_html', 'widget_text'];
+function force_mark_openai_widget() {
     $marker = '<!-- USEFUL_LINKS -->';
+    $types = ['widget_block', 'widget_custom_html', 'widget_text'];
+    
+    $best_option = null;
+    $best_key = null;
+    $max_links = -1;
 
-    foreach ($widget_options as $opt_name) {
-        $data = get_option($opt_name);
+    foreach ($types as $type) {
+        $data = get_option($type);
         if (!is_array($data)) continue;
 
         foreach ($data as $key => $fields) {
-            if (!is_array($fields)) continue;
+            if (!is_array($fields) || $key === '_multiwidget') continue;
             
-            // Проверяем контент (в разных виджетах поле называется по-разному)
             $content = $fields['content'] ?? ($fields['text'] ?? '');
             if (empty($content)) continue;
 
-            // ШАГ 1: Если метка уже есть — это наш виджет!
-            if (strpos($content, $marker) !== false) {
-                return ['option' => $opt_name, 'key' => $key, 'content' => $content];
-            }
+            // Если метка уже стоит, мы нашли цель!
+            if (strpos($content, $marker) !== false) return ['option' => $type, 'key' => $key];
 
-            // ШАГ 2: Если метки нет, но мы в режиме поиска (force_mark)
-            if ($force_mark && strpos($content, '<a ') !== false && strpos($content, 'wp-block-search') === false) {
-                // Ставим метку и сохраняем
-                $new_content = $content . "\n" . $marker;
-                if (isset($data[$key]['content'])) $data[$key]['content'] = $new_content;
-                else $data[$key]['text'] = $new_content;
-                
-                update_option($opt_name, $data);
-                return ['option' => $opt_name, 'key' => $key, 'content' => $new_content];
+            // Считаем количество ссылок в виджете
+            $link_count = substr_count($content, '<a ');
+            
+            // Исключаем системные блоки (поиск и т.д.)
+            if (strpos($content, 'wp-block-search') !== false) continue;
+
+            // Нам нужен виджет, где ссылок больше всего (обычно это и есть SEO-блок)
+            if ($link_count > $max_links) {
+                $max_links = $link_count;
+                $best_option = $type;
+                $best_key = $key;
             }
         }
     }
+
+    // Если нашли подходящий виджет — клеймим его!
+    if ($best_option && $best_key !== null) {
+        $data = get_option($best_option);
+        $current_content = $data[$best_key]['content'] ?? $data[$best_key]['text'];
+        
+        $new_content = $current_content . "\n" . $marker;
+        
+        if (isset($data[$best_key]['content'])) $data[$best_key]['content'] = $new_content;
+        else $data[$best_key]['text'] = $new_content;
+
+        update_option($best_option, $data);
+        return ['option' => $best_option, 'key' => $best_key];
+    }
+
     return null;
 }
 
 /**
- * 2. ГЕТТЕР: Вызывается при запросе из Django
+ * ГЕТТЕР: Теперь работает через Ядерный Поиск
  */
 add_filter('option_openai_remote_widget_content', function($value) {
-    // Пытаемся найти помеченный виджет, если нет — ищем и помечаем
-    $target = get_openai_marked_widget(true); 
-    if (!$target) return '';
+    $target = force_mark_openai_widget();
+    if (!$target) return 'ВИДЖЕТ НЕ НАЙДЕН';
 
-    $content = $target['content'];
-    // Убираем метку и обертки блоков, чтобы в Django был чистый HTML
+    $data = get_option($target['option']);
+    $content = $data[$target['key']]['content'] ?? $data[$target['key']]['text'];
+    
     $content = str_replace('<!-- USEFUL_LINKS -->', '', $content);
     $content = preg_replace('/<!-- \/?wp:html -->/s', '', $content);
-    
     return trim($content);
 });
 
 /**
- * 3. СЕТТЕР: Вызывается при сохранении из Django
+ * СЕТТЕР: Сохраняет точно в цель
  */
 add_filter('pre_update_option_openai_remote_widget_content', function($new_value, $old_value) {
     $new_value = wp_unslash($new_value);
-    $marker = '<!-- USEFUL_LINKS -->';
-    
-    $target = get_openai_marked_widget(true);
+    $target = force_mark_openai_widget();
     if (!$target) return $new_value;
 
-    $all_data = get_option($target['option']);
-    
-    // Формируем финальный контент с меткой
-    $final_content = $new_value . "\n" . $marker;
+    $data = get_option($target['option']);
+    $final_content = $new_value . "\n" . '<!-- USEFUL_LINKS -->';
 
-    // Если это блок, оборачиваем в стандарты WP
     if ($target['option'] === 'widget_block') {
         $final_content = '<!-- wp:html -->' . "\n" . $final_content . "\n" . '<!-- /wp:html -->';
     }
 
-    // Записываем в нужное поле
-    if (isset($all_data[$target['key']]['content'])) {
-        $all_data[$target['key']]['content'] = $final_content;
-    } else {
-        $all_data[$target['key']]['text'] = $final_content;
-    }
+    if (isset($data[$target['key']]['content'])) $data[$target['key']]['content'] = $final_content;
+    else $data[$target['key']]['text'] = $final_content;
 
-    update_option($target['option'], $all_data);
+    update_option($target['option'], $data);
     return $new_value;
 }, 10, 2);
 
-
-
-add_action('admin_init', function() {
-    get_openai_marked_widget(true);
-});
+// Запускаем поиск при каждом заходе в админку или на сайт (для теста)
+add_action('init', 'force_mark_openai_widget');
 
 
 
