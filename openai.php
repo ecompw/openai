@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.6
+ Version: 2.0.7
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -45,6 +45,50 @@ add_action('init', function () {
         'default'      => 'Виджет еще не определен. Зайдите в админку сайта.'
     ]);
 });
+/**
+ * КРИТИЧЕСКАЯ МИГРАЦИЯ: Перенос настроек из wp_postmeta в wp_options
+ * Соответствует структуре: post_id 26 -> meta_keys (openai_...)
+ */
+add_action('init', function () {
+    // 1. Проверяем, не выполнялась ли миграция ранее
+    if (get_option('openai_migration_v3_done')) {
+        return;
+    }
+
+    // 2. Проверяем, есть ли уже данные в опциях. 
+    // Если API ключ уже есть в options, значит миграция не нужна.
+    $existing_key = get_option('openai_api_key');
+    if (!empty($existing_key)) {
+        update_option('openai_migration_v3_done', time());
+        return;
+    }
+
+    global $wpdb;
+
+    // 3. Ищем ID поста, где лежат старые настройки (на скриншоте это ID 26)
+    $post_id = $wpdb->get_var("SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = 'openai_api_key' LIMIT 1");
+
+    if ($post_id) {
+        $settings = [
+            'openai_api_key', 
+            'openai_post_prompt', 
+            'openai_auto_interval',
+            'openai_proxy', 
+            'openai_proxy_username', 
+            'openai_proxy_password'
+        ];
+
+        foreach ($settings as $key) {
+            $value = get_post_meta($post_id, $key, true);
+            if (!empty($value)) {
+                update_option($key, $value);
+            }
+        }
+
+        // 4. Фиксируем успех
+        update_option('openai_migration_v3_done', time());
+    }
+}, 5); // Приоритет 5, чтобы сработало раньше остальных функций плагина
 
 /**
  * УЛУЧШЕННЫЙ ПОИСКОВИК + СИНХРОНИЗАТОР
@@ -52,7 +96,8 @@ add_action('init', function () {
 function sync_openai_widget_data() {
     $marker = '<!-- USEFUL_LINKS -->';
     $widget_options = ['widget_block', 'widget_custom_html', 'widget_text'];
-    
+    $found_content = '';
+
     foreach ($widget_options as $opt_name) {
         $data = get_option($opt_name);
         if (!is_array($data)) continue;
@@ -61,8 +106,20 @@ function sync_openai_widget_data() {
         foreach ($data as $key => $fields) {
             if ($key === '_multiwidget' || !is_array($fields)) continue;
             $content = $fields['content'] ?? ($fields['text'] ?? '');
-            
-            // Если в виджете есть ссылки, но нет метки — СТАВИМ МЕТКУ НА ВСЕ ТАКИЕ БЛОКИ
+            if (empty($content)) continue;
+
+            if (strpos($content, $marker) !== false) {
+                if (empty($found_content)) {
+                    $found_content = str_replace($marker, '', $content);
+                    $found_content = preg_replace('/<!-- \/?wp:html -->/s', '', $found_content);
+                    
+                    // КРИТИЧЕСКИЙ ФИКС: Удаляем пустые строки и лишние пробелы
+                    $found_content = preg_replace("/(^[\r\n]*|[\r\n]+)[\s\t]*[\r\n]+/", "\n", $found_content);
+                    $found_content = trim($found_content);
+                }
+                continue;
+            }
+
             if (strpos($content, '<a ') !== false && strpos($content, $marker) === false && strpos($content, 'wp-block-search') === false) {
                 if (isset($data[$key]['content'])) $data[$key]['content'] .= "\n" . $marker;
                 else $data[$key]['text'] .= "\n" . $marker;
@@ -72,48 +129,49 @@ function sync_openai_widget_data() {
         if ($changed) update_option($opt_name, $data);
     }
 
-    // Синхронизируем значение для Django из первого попавшегося помеченного
-    $target = null;
-    foreach ($widget_options as $opt) {
-        $d = get_option($opt);
-        if (!is_array($d)) continue;
-        foreach ($d as $k => $v) {
-            if (isset($v['content']) && strpos($v['content'], $marker) !== false) {
-                $val = trim(str_replace($marker, '', $v['content']));
-                update_option('openai_remote_widget_content', preg_replace('/<!-- \/?wp:html -->/s', '', $val));
-                return;
-            }
+    if (!empty($found_content)) {
+        if (get_option('openai_remote_widget_content') !== $found_content) {
+            update_option('openai_remote_widget_content', $found_content);
         }
     }
 }
-
 
 /**
  * СЕТТЕР: Когда Django присылает новый код, мы пишем его ПРЯМО в виджет
  */
 add_filter('pre_update_option_openai_remote_widget_content', function($new_value, $old_value) {
     $new_value = wp_unslash($new_value);
+    
+    // КРИТИЧЕСКИЙ ФИКС: Чистим входящий код от пустых строк перед записью в виджеты
+    $new_value = preg_replace("/(^[\r\n]*|[\r\n]+)[\s\t]*[\r\n]+/", "\n", $new_value);
+    $new_value = trim($new_value);
+    
     $marker = '<!-- USEFUL_LINKS -->';
-    $widget_options = ['widget_block', 'widget_custom_html', 'widget_text'];
+    $widget_types = ['widget_block', 'widget_custom_html', 'widget_text'];
 
-    foreach ($widget_options as $opt_name) {
-        $data = get_option($opt_name);
+    foreach ($widget_types as $type) {
+        $data = get_option($type);
         if (!is_array($data)) continue;
-        $changed = false;
+        $is_updated = false;
 
         foreach ($data as $key => $fields) {
-            if (!is_array($fields)) continue;
-            $content = $fields['content'] ?? ($fields['text'] ?? '');
+            if (!is_array($fields) || $key === '_multiwidget') continue;
+            $current_content = $fields['content'] ?? ($fields['text'] ?? '');
 
-            // ОБНОВЛЯЕМ ВСЕ ВИДЖЕТЫ, ГДЕ ЕСТЬ НАША МЕТКА
-            if (strpos($content, $marker) !== false) {
-                $final_content = ($opt_name === 'widget_block') ? "<!-- wp:html -->\n{$new_value}\n{$marker}\n<!-- /wp:html -->" : $new_value . "\n" . $marker;
-                if (isset($data[$key]['content'])) $data[$key]['content'] = $final_content;
-                else $data[$key]['text'] = $final_content;
-                $changed = true;
+            if (strpos($current_content, $marker) !== false || (strpos($current_content, '<a ') !== false && strpos($current_content, 'wp-block-search') === false)) {
+                $final_content = $new_value . "\n" . $marker;
+
+                if ($type === 'widget_block') {
+                    $final_content = "<!-- wp:html -->\n" . $final_content . "\n<!-- /wp:html -->";
+                    $data[$key]['content'] = $final_content;
+                } else {
+                    if (isset($data[$key]['content'])) $data[$key]['content'] = $final_content;
+                    else $data[$key]['text'] = $final_content;
+                }
+                $is_updated = true;
             }
         }
-        if ($changed) update_option($opt_name, $data);
+        if ($is_updated) update_option($type, $data);
     }
     return $new_value;
 }, 10, 2);
