@@ -26,50 +26,6 @@ require_once plugin_dir_path(__FILE__) . 'functions.php';
 require_once plugin_dir_path(__FILE__) . 'form.php';
 
 /**
- * Регистрация настроек для доступа через стандартный WP REST API (/wp/v2/settings)
- */
-add_action('init', function() {
-    $settings = [
-        'openai_api_key'               => 'string',
-        'openai_post_prompt'           => 'string',
-        'openai_auto_interval'         => 'string',
-        'openai_proxy'                 => 'string',
-        'openai_remote_widget_content' => 'string', // Это поле активирует ваш фильтр sync_openai_widget_data
-    ];
-
-    foreach ($settings as $name => $type) {
-        register_setting('openai_settings_group', $name, [
-            'type'              => $type,
-            'description'       => 'OpenAI Plugin Setting',
-            'show_in_rest'      => true, // КРИТИЧЕСКИ ВАЖНО: разрешает доступ через API
-            'sanitize_callback' => null,    // Можно добавить санитизацию, если нужно
-        ]);
-    }
-});
-/**
- * Обработчик API запроса
- */
-function openai_rest_generate_handler($request) {
-    // Вызываем вашу функцию генерации
-    $result_html = openai_generate_post();
-
-    // Анализируем HTML-ответ функции на наличие успеха
-    if (strpos($result_html, 'updated') !== false) {
-        return new WP_REST_Response([
-            'status'  => 'success',
-            'message' => 'Статья успешно создана и опубликована!'
-        ], 200);
-    } else {
-        // Извлекаем текст ошибки из возвращаемого HTML
-        $error_message = strip_tags($result_html);
-        return new WP_REST_Response([
-            'status'  => 'error',
-            'message' => trim($error_message)
-        ], 500);
-    }
-}
-
-/**
  * Регистрация настроек
  */
 add_action('init', function () {
@@ -307,7 +263,34 @@ add_action('rest_api_init', function () {
     ]);
 });
 
+/**
+ * Кастомный эндпоинт для сохранения настроек, обходящий ограничения WP Core
+ */
+addaction('restapi_init', function () {
+    registerrestroute('openai/v1', '/save-settings', [
+        'methods'             => 'POST',
+        'callback'            => 'openaicustomsavesettingshandler',
+        'permission_callback' => function () {
+            // Используем те же права, что и для создания постов
+            return currentusercan('edit_posts');
+        }
+    ]);
+});
 
+function openaicustomsavesettingshandler($request) {
+    $params = $request->getjsonparams();
+    if (empty($params)) {
+        return new WPError('nodata', 'Данные не получены', ['status' => 400]);
+    }
+
+    foreach ($params as $key => $value) {
+        // update_option автоматически вызывает все фильтры, 
+        // включая ваш syncopenaiwidget_data для виджетов.
+        update_option($key, $value);
+    }
+
+    return new WPRESTResponse(['status' => 'success', 'message' => 'Settings updated'], 200);
+}
 
 function openai_auto_post_menu() {
     add_menu_page('OpenAI Auto Post', 'OpenAI Auto Post', 'manage_options', 'openai-auto-post', 'openai_auto_post_callback');
