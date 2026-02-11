@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.14
+ Version: 2.0.15
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -24,6 +24,29 @@ if (file_exists($checker_file)) {
 
 require_once plugin_dir_path(__FILE__) . 'functions.php';
 require_once plugin_dir_path(__FILE__) . 'form.php';
+
+
+/**
+ * ВКЛЮЧЕНИЕ BASIC AUTH ДЛЯ REST API (Исправление для Django)
+ */
+add_filter('rest_authentication_errors', function ($result) {
+    if (true === $result || is_wp_error($result)) {
+        return $result;
+    }
+
+    if (!isset($_SERVER['PHP_AUTH_USER'])) {
+        return $result;
+    }
+
+    $user = wp_authenticate($_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW']);
+
+    if (is_wp_error($user)) {
+        return $result;
+    }
+
+    wp_set_current_user($user->ID);
+    return true;
+});
 
 /**
  * Регистрация эндпоинтов для Django (v2.0.13-patch)
@@ -64,22 +87,32 @@ function openai_rest_generate_handler() {
  * Обработчик настроек
  */
 function openai_rest_settings_handler($request) {
-    $keys = ['openai_api_key', 'openai_post_prompt', 'openai_auto_interval', 'openai_proxy', 'openai_proxy_username', 'openai_proxy_password', 'openai_remote_widget_content'];
+    $keys = [
+        'openai_api_key', 
+        'openai_post_prompt', 
+        'openai_auto_interval', 
+        'openai_proxy', 
+        'openai_proxy_username', 
+        'openai_proxy_password', 
+        'openai_remote_widget_content'
+    ];
 
     if ($request->get_method() === 'POST') {
         $params = $request->get_json_params();
         foreach ($keys as $key) {
             if (isset($params[$key])) {
-                update_option($key, $params[$key]);
+                update_option($key, (string)$params[$key]);
             }
         }
     }
 
     $res = [];
-    foreach ($keys as $key) { $res[$key] = get_option($key, ''); }
+    foreach ($keys as $key) { 
+        // Гарантируем, что Django получит строку, а не null/false
+        $res[$key] = (string)get_option($key, ''); 
+    }
     return new WP_REST_Response($res, 200);
 }
-
 /**
  * Регистрация настроек
  */
