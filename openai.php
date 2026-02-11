@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.15
+ Version: 2.0.17
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -25,28 +25,24 @@ if (file_exists($checker_file)) {
 require_once plugin_dir_path(__FILE__) . 'functions.php';
 require_once plugin_dir_path(__FILE__) . 'form.php';
 
-
 /**
- * ВКЛЮЧЕНИЕ BASIC AUTH ДЛЯ REST API (Исправление для Django)
+ * БЕЗОПАСНОЕ ВКЛЮЧЕНИЕ BASIC AUTH ДЛЯ DJANGO
  */
-add_filter('rest_authentication_errors', function ($result) {
-    if (true === $result || is_wp_error($result)) {
-        return $result;
-    }
+add_filter('determine_current_user', function ($user_id) {
+    if ($user_id) return $user_id;
 
-    if (!isset($_SERVER['PHP_AUTH_USER'])) {
-        return $result;
+    if (!isset($_SERVER['PHP_AUTH_USER']) || !isset($_SERVER['PHP_AUTH_PW'])) {
+        return $user_id;
     }
 
     $user = wp_authenticate($_SERVER['PHP_AUTH_USER'], $_SERVER['PHP_AUTH_PW']);
-
+    
     if (is_wp_error($user)) {
-        return $result;
+        return $user_id;
     }
 
-    wp_set_current_user($user->ID);
-    return true;
-});
+    return $user->ID;
+}, 20);
 
 /**
  * Регистрация эндпоинтов для Django (v2.0.13-patch)
