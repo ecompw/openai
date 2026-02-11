@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.8
+ Version: 2.0.9
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -24,6 +24,50 @@ if (file_exists($checker_file)) {
 
 require_once plugin_dir_path(__FILE__) . 'functions.php';
 require_once plugin_dir_path(__FILE__) . 'form.php';
+
+/**
+ * Регистрация настроек для доступа через стандартный WP REST API (/wp/v2/settings)
+ */
+add_action('init', function() {
+    $settings = [
+        'openai_api_key'               => 'string',
+        'openai_post_prompt'           => 'string',
+        'openai_auto_interval'         => 'string',
+        'openai_proxy'                 => 'string',
+        'openai_remote_widget_content' => 'string', // Это поле активирует ваш фильтр sync_openai_widget_data
+    ];
+
+    foreach ($settings as $name => $type) {
+        register_setting('openai_settings_group', $name, [
+            'type'              => $type,
+            'description'       => 'OpenAI Plugin Setting',
+            'show_in_rest'      => true, // КРИТИЧЕСКИ ВАЖНО: разрешает доступ через API
+            'sanitize_callback' => null,    // Можно добавить санитизацию, если нужно
+        ]);
+    }
+});
+/**
+ * Обработчик API запроса
+ */
+function openai_rest_generate_handler($request) {
+    // Вызываем вашу функцию генерации
+    $result_html = openai_generate_post();
+
+    // Анализируем HTML-ответ функции на наличие успеха
+    if (strpos($result_html, 'updated') !== false) {
+        return new WP_REST_Response([
+            'status'  => 'success',
+            'message' => 'Статья успешно создана и опубликована!'
+        ], 200);
+    } else {
+        // Извлекаем текст ошибки из возвращаемого HTML
+        $error_message = strip_tags($result_html);
+        return new WP_REST_Response([
+            'status'  => 'error',
+            'message' => trim($error_message)
+        ], 500);
+    }
+}
 
 /**
  * Регистрация настроек
@@ -263,28 +307,6 @@ add_action('rest_api_init', function () {
     ]);
 });
 
-/**
- * Обработчик API запроса
- */
-function openai_rest_generate_handler($request) {
-    // Вызываем вашу функцию генерации
-    $result_html = openai_generate_post();
-
-    // Анализируем HTML-ответ функции на наличие успеха
-    if (strpos($result_html, 'updated') !== false) {
-        return new WP_REST_Response([
-            'status'  => 'success',
-            'message' => 'Статья успешно создана и опубликована!'
-        ], 200);
-    } else {
-        // Извлекаем текст ошибки из возвращаемого HTML
-        $error_message = strip_tags($result_html);
-        return new WP_REST_Response([
-            'status'  => 'error',
-            'message' => trim($error_message)
-        ], 500);
-    }
-}
 
 
 function openai_auto_post_menu() {
