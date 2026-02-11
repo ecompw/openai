@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.11
+ Version: 2.0.12
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -265,54 +265,6 @@ function openai_custom_save_settings_handler($request) {
     return new WP_REST_Response(['status' => 'success', 'message' => 'Settings updated'], 200);
 }
 
-/**
- * УНИВЕРСАЛЬНЫЙ ЭНДПОИНТ: Чтение и сохранение настроек (v2.1.1)
- * Поддерживает GET и POST, работает через права edit_posts (Basic Auth)
- */
-add_action('rest_api_init', function () {
-    register_rest_route('openai/v1', '/save-settings', [
-        'methods'             => ['GET', 'POST'], // Разрешаем оба метода
-        'callback'            => 'openai_universal_settings_handler',
-        'permission_callback' => function () {
-            // Используем те же права, что и для создания постов
-            return current_user_can('edit_posts');
-        }
-    ]);
-});
-
-function openai_universal_settings_handler($request) {
-    $keys = [
-        'openai_api_key', 
-        'openai_post_prompt', 
-        'openai_auto_interval', 
-        'openai_proxy', 
-        'openai_proxy_username', 
-        'openai_proxy_password',
-        'openai_remote_widget_content'
-    ];
-
-    // Если это POST — сохраняем пришедшие данные
-    if ($request->get_method() === 'POST') {
-        $params = $request->get_json_params();
-        if (!empty($params)) {
-            foreach ($keys as $key) {
-                if (isset($params[$key])) {
-                    // update_option автоматически вызывает ваш фильтр синхронизации виджетов
-                    update_option($key, $params[$key]);
-                }
-            }
-        }
-    }
-
-    // Всегда возвращаем актуальные настройки (для GET и после POST)
-    // Это гарантирует, что Django-панель всегда видит текущие данные
-    $current_settings = [];
-    foreach ($keys as $key) {
-        $current_settings[$key] = get_option($key, '');
-    }
-
-    return new WP_REST_Response($current_settings, 200);
-}
 
 
 
