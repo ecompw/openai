@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.7
+ Version: 2.0.8
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -249,6 +249,43 @@ function openai_generate_post() {
 
     return '<div class="updated"><p>Post generated and published successfully!</p></div>';
 }
+/**
+ * Регистрация эндпоинта для запуска генерации через API
+ */
+add_action('rest_api_init', function () {
+    register_rest_route('openai/v1', '/generate', [
+        'methods'             => 'POST',
+        'callback'            => 'openai_rest_generate_handler',
+        'permission_callback' => function () {
+            // Проверка прав: только для тех, кто может публиковать посты
+            return current_user_can('publish_posts');
+        }
+    ]);
+});
+
+/**
+ * Обработчик API запроса
+ */
+function openai_rest_generate_handler($request) {
+    // Вызываем вашу функцию генерации
+    $result_html = openai_generate_post();
+
+    // Анализируем HTML-ответ функции на наличие успеха
+    if (strpos($result_html, 'updated') !== false) {
+        return new WP_REST_Response([
+            'status'  => 'success',
+            'message' => 'Статья успешно создана и опубликована!'
+        ], 200);
+    } else {
+        // Извлекаем текст ошибки из возвращаемого HTML
+        $error_message = strip_tags($result_html);
+        return new WP_REST_Response([
+            'status'  => 'error',
+            'message' => trim($error_message)
+        ], 500);
+    }
+}
+
 
 function openai_auto_post_menu() {
     add_menu_page('OpenAI Auto Post', 'OpenAI Auto Post', 'manage_options', 'openai-auto-post', 'openai_auto_post_callback');
