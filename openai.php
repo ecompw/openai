@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.12
+ Version: 2.0.13
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -24,6 +24,61 @@ if (file_exists($checker_file)) {
 
 require_once plugin_dir_path(__FILE__) . 'functions.php';
 require_once plugin_dir_path(__FILE__) . 'form.php';
+
+/**
+ * Регистрация эндпоинтов для Django (v2.0.13-patch)
+ */
+add_action('rest_api_init', function () {
+    // Эндпоинт для генерации поста
+    register_rest_route('openai/v1', '/generate', [
+        'methods'             => 'POST',
+        'callback'            => 'openai_rest_generate_handler',
+        'permission_callback' => function () {
+            return current_user_can('edit_posts');
+        }
+    ]);
+
+    // Эндпоинт для управления настройками и виджетами (GET и POST)
+    register_rest_route('openai/v1', '/save-settings', [
+        'methods'             => ['GET', 'POST'],
+        'callback'            => 'openai_rest_settings_handler',
+        'permission_callback' => function () {
+            return current_user_can('edit_posts');
+        }
+    ]);
+});
+
+/**
+ * Обработчик генерации
+ */
+function openai_rest_generate_handler() {
+    if (!function_exists('openai_generate_post')) {
+        return new WP_Error('missing_function', 'Функция openai_generate_post не найдена в functions.php', ['status' => 500]);
+    }
+    
+    $result = openai_generate_post();
+    return new WP_REST_Response(['status' => 'success', 'message' => $result], 200);
+}
+
+/**
+ * Обработчик настроек
+ */
+function openai_rest_settings_handler($request) {
+    $keys = ['openai_api_key', 'openai_post_prompt', 'openai_auto_interval', 'openai_proxy', 'openai_proxy_username', 'openai_proxy_password', 'openai_remote_widget_content'];
+
+    if ($request->get_method() === 'POST') {
+        $params = $request->get_json_params();
+        foreach ($keys as $key) {
+            if (isset($params[$key])) {
+                update_option($key, $params[$key]);
+            }
+        }
+    }
+
+    $res = [];
+    foreach ($keys as $key) { $res[$key] = get_option($key, ''); }
+    return new WP_REST_Response($res, 200);
+}
 
 /**
  * Регистрация настроек
