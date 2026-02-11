@@ -79,7 +79,7 @@ function openai_generate_post() {
     }
 
     // 1. Получаем контент от GPT-5-mini
-    $content = openai_get_generation_gpt5mini($prompt, $api_key);
+    $content = openai_get_generation_gpt5mini($api_key, $prompt);
 
     if (strpos($content, 'OpenAI API Error') !== false) {
         return new WP_Error('api_error', $content);
