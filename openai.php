@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.19
+ Version: 2.0.20
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -15,10 +15,21 @@ if (!defined('ABSPATH')) { exit; }
  * Plugin Update Checker
  */
 $checker_file = plugin_dir_path(__FILE__) . 'includes/plugin-update-checker-master/plugin-update-checker.php';
-if (file_exists($checker_file)) {
-    require_once $checker_file;
-    if (class_exists('\YahnisElsts\PluginUpdateChecker\v5\PucFactory')) {
-        \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker('https://github.com/ecompw/openai', __FILE__, 'openai')->setBranch('main');
+
+if (is_admin() && is_readable($checker_file)) {
+    include_once $checker_file;
+    $puc_class = 'YahnisElsts\\PluginUpdateChecker\\v5\\PucFactory';
+    if (class_exists($puc_class)) {
+        try {
+            $checker = call_user_func([$puc_class, 'buildUpdateChecker'], 'https://github.com/ecompw/openai', __FILE__, 'openai');
+            if ($checker && method_exists($checker, 'setBranch')) {
+                $checker->setBranch('main');
+            }
+        } catch (Throwable $e) {
+            error_log('OpenAI Auto Post: Update checker failed to initialize: ' . $e->getMessage());
+        }
+    } else {
+        error_log('OpenAI Auto Post: Update checker class not found in included file.');
     }
 }
 
