@@ -66,3 +66,59 @@ function get_random_media_image_url() {
     }
     return !empty($image_ids) ? wp_get_attachment_url($image_ids[array_rand($image_ids)]) : false;
 }
+
+/**
+ * Основная функция генерации поста, вызываемая через API
+ */
+function openai_generate_post() {
+    $api_key = get_option('openai_api_key');
+    $prompt  = get_option('openai_post_prompt', 'Напиши интересную статью на свободную тему.');
+
+    if (empty($api_key)) {
+        return new WP_Error('no_api_key', 'API ключ не установлен в настройках плагина.');
+    }
+
+    // 1. Получаем контент от GPT-5-mini
+    $content = openai_get_generation_gpt5mini($prompt, $api_key);
+
+    if (strpos($content, 'OpenAI API Error') !== false) {
+        return new WP_Error('api_error', $content);
+    }
+
+    // 2. Извлекаем заголовок (первая строка или тег <h1>/<h1>)
+    $title = 'Автоматический пост ' . date('Y-m-d H:i');
+    if (preg_match('/<h1>(.*?)<\/h1>/i', $content, $matches)) {
+        $title = strip_tags($matches[1]);
+    } elseif (preg_match('/^# (.*)$/m', $content, $matches)) {
+        $title = strip_tags($matches[1]);
+    }
+
+    // 3. Создаем пост
+    $post_data = [
+        'post_title'   => $title,
+        'post_content' => $content,
+        'post_status'  => 'publish',
+        'post_author'  => 1,
+        'post_type'    => 'post',
+    ];
+
+    $post_id = wp_insert_post($post_data);
+
+    if (is_wp_error($post_id)) {
+        return $post_id;
+    }
+
+    // 4. Устанавливаем случайную миниатюру, если есть
+    $image_url = get_random_media_image_url();
+    if ($image_url) {
+        // Логика привязки image_url к Featured Image (требует ID вложения)
+        // Для упрощения в v2.0.12 можно просто добавить картинку в начало контента
+        $updated_post = [
+            'ID'           => $post_id,
+            'post_content' => '<img src="' . esc_url($image_url) . '" class="wp-post-image" /><br>' . $content
+        ];
+        wp_update_post($updated_post);
+    }
+
+    return "Пост успешно создан! ID: " . $post_id;
+}
