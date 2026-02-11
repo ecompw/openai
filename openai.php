@@ -264,32 +264,31 @@ add_action('rest_api_init', function () {
 });
 
 /**
- * Кастомный эндпоинт для сохранения настроек, обходящий ограничения WP Core
+ * ИСПРАВЛЕННЫЙ: Кастомный эндпоинт для сохранения настроек
  */
-addaction('restapi_init', function () {
-    registerrestroute('openai/v1', '/save-settings', [
+add_action('rest_api_init', function () {
+    register_rest_route('openai/v1', '/save-settings', [
         'methods'             => 'POST',
-        'callback'            => 'openaicustomsavesettingshandler',
+        'callback'            => 'openai_custom_save_settings_handler',
         'permission_callback' => function () {
             // Используем те же права, что и для создания постов
-            return currentusercan('edit_posts');
+            return current_user_can('edit_posts');
         }
     ]);
 });
 
-function openaicustomsavesettingshandler($request) {
-    $params = $request->getjsonparams();
+function openai_custom_save_settings_handler($request) {
+    $params = $request->get_json_params();
     if (empty($params)) {
-        return new WPError('nodata', 'Данные не получены', ['status' => 400]);
+        return new WP_Error('no_data', 'Данные не получены', ['status' => 400]);
     }
 
     foreach ($params as $key => $value) {
-        // update_option автоматически вызывает все фильтры, 
-        // включая ваш syncopenaiwidget_data для виджетов.
+        // Обновляем опции. Это автоматически запустит фильтр синхронизации виджетов.
         update_option($key, $value);
     }
 
-    return new WPRESTResponse(['status' => 'success', 'message' => 'Settings updated'], 200);
+    return new WP_REST_Response(['status' => 'success', 'message' => 'Settings updated'], 200);
 }
 
 function openai_auto_post_menu() {
