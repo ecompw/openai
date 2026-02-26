@@ -32,7 +32,7 @@ function openai_auto_post_log($message) {
  * Выполняет запрос к OpenAI (Responses API) и возвращает строку с текстом результата
  * При ошибке возвращает строку "OpenAI API Error (код): сообщение" или пустую строку.
  */
-function openai_get_generation_gpt5mini($api_key, $prompt, $max_output_tokens = 2048, $proxy = []) {
+function openai_get_generation_gpt5mini($api_key, $prompt, $max_output_tokens = 10240, $proxy = []) {
     // Защита от отсутствия ключа
     if (empty($api_key)) {
         openai_auto_post_log('openai_get_generation_gpt5mini called without api_key');

@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.22
+ Version: 2.0.25
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -334,6 +334,91 @@ add_filter('pre_update_option_openai_remote_widget_content', function($new_value
 add_action('init', 'sync_openai_widget_data');
 
 /**
+ * Парсит строку вида "Ключ: {{ Значение }}, ДругойКлюч: {{ Другое }}" в ассоциативный массив.
+ * Ключи нормализуются в нижний регистр и очищаются.
+ * Возвращает массив вида ['тема' => 'Социальные сети', 'area' => 'Cyprus']
+ */
+function openai_parse_prompt_variables($text) {
+    $result = [];
+
+    if (!is_string($text) || trim($text) === '') {
+        return $result;
+    }
+
+    // Ищем шаблоны вида "Ключ: {{ значение }}"
+    // Поддерживаем Unicode (русские буквы) и пробелы в имени ключа.
+    if (preg_match_all('/([\p{L}\p{N}\s\-_]+)\s*:\s*\{\{\s*(.*?)\s*\}\}/u', $text, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $m) {
+            $raw_key = isset($m[1]) ? $m[1] : '';
+            $raw_val = isset($m[2]) ? $m[2] : '';
+
+            $key = mb_strtolower(trim($raw_key), 'UTF-8');
+            // Удаляем лишние пробелы внутри ключа (заменяем множественные пробелы на один)
+            $key = preg_replace('/\s+/u', ' ', $key);
+            $value = trim($raw_val);
+
+            if ($key !== '') {
+                $result[$key] = $value;
+            }
+        }
+    }
+
+    return $result;
+}
+
+/**
+ * Заменяет плейсхолдеры вида {{ Placeholder }} в $hint на значения из $vars.
+ * Ключи в $vars ожидаются нормализованными (lowercase & trimmed).
+ * Если соответствия нет — по умолчанию оставляет плейсхолдер как есть.
+ */
+function openai_replace_placeholders_in_hint($hint, $vars = []) {
+    if (!is_string($hint) || $hint === '') {
+        return '';
+    }
+
+    $out = preg_replace_callback('/\{\{\s*(.*?)\s*\}\}/u', function ($m) use ($vars) {
+        $placeholder_raw = trim($m[1]);
+        $placeholder = mb_strtolower($placeholder_raw, 'UTF-8');
+        $placeholder = preg_replace('/\s+/u', ' ', $placeholder);
+
+        if ($placeholder === '') {
+            return $m[0];
+        }
+        if (array_key_exists($placeholder, $vars)) {
+            return $vars[$placeholder];
+        }
+        // Не нашли соответствие — оставляем как есть.
+        return $m[0];
+    }, $hint);
+
+    return $out;
+}
+
+/**
+ * Возвращает случайную букву русского алфавита (без 'ё'), индекс от 1 до 27.
+ * Использует random_int при возможности, иначе mt_rand.
+ */
+function openai_random_russian_letter() {
+    $letters = [
+        'А','Б','В','Г','Д','Е','Ж','З','И','К','Л','М','Н','О','П',
+        'Р','С','Т','У','Ф','Х','Ц','Ч','Ш','Э','Ю','Я'
+    ];
+    $count = count($letters); 
+
+    try {
+        $idx = random_int(0, $count - 1);
+    } catch (Throwable $e) {
+        // fallback
+        $idx = mt_rand(0, $count - 1);
+    } catch (Exception $e) {
+        $idx = mt_rand(0, $count - 1);
+    }
+
+    return $letters[$idx];
+}
+
+
+/**
  * Форматируем ответ (markdown -> HTML)
  * Улучшенные регулярные выражения: многострочная обработка заголовков и жирного текста.
  */
@@ -356,32 +441,230 @@ function format_response($response) {
     return $response;
 }
 
+
 /**
- * Извлекает <title>...</title> из контента и возвращает [title, body]
+ * Извлекает заголовок и тело из ответа модели.
+ * Поддерживает несколько форматов:
+ * 1) <title>Title</title>
+ * 2) <h1>..</h1>, <h2>..</h2> и т.д. (первый заголовок)
+ * 3) Первый <p> (если короткий)
+ * 4) Первая строка plain text (если короткая)
+ *
+ * Возвращает массив: [title, body].
+ * Если не удалось извлечь заголовок — возвращает ['', $response_content] и логирует фрагмент.
  */
 function extract_title_and_body($response_content) {
-    if (preg_match('/<title>(.*?)<\/title>/is', $response_content, $matches)) {
-        $title = trim($matches[1]);
-        $body  = str_replace($matches[0], '', $response_content);
-        return [$title, $body];
+    $html = (string) $response_content;
+
+    // 1) <title>...</title>
+    if (preg_match('/<title>(.*?)<\/title>/is', $html, $m)) {
+        $title = trim($m[1]);
+        // Удаляем только первое вхождение <title>...</title>
+        $body = preg_replace('/<title>.*?<\/title>/is', '', $html, 1);
+        return [$title, trim($body)];
     }
-    return ['', $response_content];
+
+    // 2) Первый заголовок <h1>-<h6>
+    if (preg_match('/<h([1-6])[^>]*>(.*?)<\/h\1>/is', $html, $m)) {
+        $title_raw = trim($m[2]);
+        $title = trim(strip_tags($title_raw));
+        // Удаляем первое вхождение найденного тега заголовка
+        $body = preg_replace('/<h' . $m[1] . '[^>]*>.*?<\/h' . $m[1] . '>/is', '', $html, 1);
+        return [$title, trim($body)];
+    }
+
+    // 3) Первый <p> (если короткий — разумный максимум длины заголовка)
+    if (preg_match('/^\s*<p[^>]*>(.*?)<\/p>/is', $html, $m)) {
+        $p_text = trim(strip_tags($m[1]));
+        // Ограничение длины заголовка в символах (измените при необходимости)
+        $max_title_len = 120;
+        if ($p_text !== '' && (function_exists('mb_strlen') ? mb_strlen($p_text, 'UTF-8') : strlen($p_text)) <= $max_title_len) {
+            $title = $p_text;
+            // Удаляем первый <p> только
+            $body = preg_replace('/^\s*<p[^>]*>.*?<\/p>/is', '', $html, 1);
+            return [$title, trim($body)];
+        }
+    }
+
+    // 4) Если нет HTML тегов с заголовком — работаем с plain text:
+    $plain = trim( wp_strip_all_tags($html) );
+    if ($plain !== '') {
+        // Разделим по двойному переводу строки — первый параграф
+        $parts = preg_split("/(\r\n|\n|\r){2,}/", $plain, 2);
+        $first_para = isset($parts[0]) ? trim($parts[0]) : '';
+        $max_title_len = 120;
+        if ($first_para !== '' && (function_exists('mb_strlen') ? mb_strlen($first_para, 'UTF-8') : strlen($first_para)) <= $max_title_len) {
+            // Пытаемся удалить первое вхождение этой строки из исходного $html
+            $body = $html;
+            // Ищем и удаляем первое вхождение $first_para (в виде plain text в HTML) — осторожно
+            $pos = mb_strpos($body, $first_para);
+            if ($pos !== false) {
+                // Удаляем первый фрагмент plain text из строки HTML (не идеально для всех случаев, но работает часто)
+                $body = mb_substr($body, 0, $pos) . mb_substr($body, $pos + mb_strlen($first_para));
+            }
+            return [$first_para, trim($body)];
+        }
+
+        // Ещё вариант: взять первое предложение как заголовок, если оно короткое.
+        // Попробуем разделение по точке, восклицанию или вопросу.
+        $sentences = preg_split('/([.!?])\s+/u', $first_para, 2, PREG_SPLIT_DELIM_CAPTURE);
+        if (!empty($sentences) && isset($sentences[0])) {
+            $candidate = trim($sentences[0]);
+            if ($candidate !== '' && (function_exists('mb_strlen') ? mb_strlen($candidate, 'UTF-8') : strlen($candidate)) <= $max_title_len) {
+                // Не удаляем его из тела, потому что сложнее корректно вырезать предложение в HTML.
+                return [$candidate, $html];
+            }
+        }
+    }
+
+    // 5) Не удалось извлечь — логируем фрагмент (первые 1000 символов) и возвращаем пустой заголовок
+    if (function_exists('openai_auto_post_log')) {
+        $snippet = substr($html, 0, 1000);
+        openai_auto_post_log('Failed to extract title from content. Snippet: ' . $snippet);
+    }
+
+    return ['', $html];
 }
 
 /**
- * Генерация и публикация поста
+ * Обновлённая openai_generate_post:
+ * - проверяет длину saved_prompt (если >250 — abort)
+ * - парсит переменные из saved_prompt
+ * - формирует system prompt (жёстко в коде) и подставляет переменные, включая случайную букву
+ * - если остались незаполненные плейсхолдеры — добавляет saved_prompt в конец как context
+ * - вызывает openai_get_generation_gpt5mini для генерации
  */
 function openai_generate_post() {
     $api_key      = get_option('openai_api_key');
-    $saved_prompt = get_option('openai_post_prompt');
+    $saved_prompt = (string) get_option('openai_post_prompt');
 
-    if (empty($api_key) || empty(trim((string) $saved_prompt))) {
+    if (empty($api_key) || trim($saved_prompt) === '') {
         return '<div class="error"><p>API key or prompt not set.</p></div>';
     }
 
-    $prompt_hint = 'Enclose the article title with <title> and </title> tags. Format the output using standard Markdown structure (e.g., headings, bullets, emphasis), but do not enclose the output in Markdown blocks or code formatting. Do not include your comments in the output.';
-    $prompt      = trim((string) $saved_prompt . "\n\n" . $prompt_hint);
+    // Защита от старых/полных промптов: если длина saved_prompt больше 250 символов — не генерируем.
+    $prompt_length = function_exists('mb_strlen') ? mb_strlen($saved_prompt, 'UTF-8') : strlen($saved_prompt);
+    if ($prompt_length > 250) {
+        if (function_exists('openai_auto_post_log')) {
+            openai_auto_post_log("Saved prompt too long ({$prompt_length} chars). Aborting generation.");
+        }
+        return '<div class="error"><p>Prompt is too long (' . esc_html($prompt_length) . ' characters). Generation aborted to avoid incompatible legacy prompts.</p></div>';
+    }
 
+    // Жёстко заданный системный промпт (прописываете его прямо в коде)
+    $system_prompt_template = <<<'PROMPT'
+Write a ready-to-publish blog post for the {{Title}} website. Topic area: {{Theme}}. Target audience: readers from {{Area}}.
+LANGUAGE: Russian.
+CRITICAL OUTPUT RULE:
+- Output ONLY the final article text.
+- Do NOT output planning, outlines, drafts, hidden reasoning, or any meta commentary.
+
+## Persona (internal only; MUST NOT appear in text)
+1) Choose a profession whose name begins with the russian letter: {{Letter}}
+2) Create an {{Theme}}-related persona (profession, experience, mindset, current situation) ONLY to shape the article’s angle, depth and vocabulary.
+## Topic selection
+4) Choose ONE non-obvious aspect of {{Theme}} to explore deeply. The topic must be specific, fresh, and practical.
+
+## Title
+5) Provide a title (H1):
+   - ≤ 8 words
+   - neutral, not clickbait
+   - do NOT use: “взгляд”, “глазами”, “мнение”
+   - do NOT mention any role/persona in the title
+
+## Writing rules
+6) The article must read like a coherent essay: engaging opening → structured development → thoughtful ending.
+7) STRICT BAN on meta phrases about the article itself:
+   - do NOT use: “в этой статье”, “этот текст”, “мы рассмотрим”, “поговорим о”, “разберём”, “в конце”, “подведём итоги”, “далее”, “ниже”.
+The text should start immediately with substance, not with “about-ness”.
+8) No external sources: no citations, no interviews, no laws, no study names, no exact statistics or “precise figures”.
+If general facts are needed, use careful wording (“часто”, “обычно”, “как правило”).
+9) Explain any specialized term the first time it appears with a short definition (1–2 lines), integrated naturally.
+10) Style: formal, respectful, expert-friendly Russian; lively and natural; no fluff, no bureaucratic jargon, no repetitive “нейросетевые” clichés. Use “ё” where appropriate.
+11) Never mention AI/model/prompt/generation/algorithm/system messages.
+
+## Actionable tips (one section)
+12) Include exactly one section with actionable tips:
+   - short, clear, applicable
+   - NO direct address to the reader (ban: “вы/вам/ваш/тебе/твой”)
+   - prefer infinitives and neutral forms (e.g., “Сформулировать…”, “Проверять…”, “Сопоставлять…”)
+
+## Ending
+13) End with a calm summary of the practical value of the approach, without calls to action, without advice, and without broad generalizations.
+
+## Formatting
+- Use Markdown in plain text (no code fences in the final output).
+- Structure: one H1 title, then H2, H3  headings and bullet lists.
+- Do NOT use headings like “Введение”, “Заключение”, “Итоги”, “Результаты”, “Мнение”.
+- Do NOT use bold.
+
+## Length (STRICT)
+Target length: 2000–2500 words (WORDS, not characters).
+Before outputting, internally check word count:
+- If < 2000: expand with deeper reasoning, scenarios, and clarifications.
+- If > 2500: compress while keeping clarity and structure.
+
+Output ONLY the article.
+
+PROMPT;
+
+    // Парсим переменные из saved_prompt (ожидается формат "Ключ: {{ Значение }}")
+    $parsed_vars = openai_parse_prompt_variables($saved_prompt);
+
+    // Автоматические значения: Title (название сайта), Letter (рандомная буква)
+    $site_title = get_bloginfo('name');
+    $letter = openai_random_russian_letter();
+
+    // Нормализованные ключи для замены
+    // Используем ключи в lower-case, без лишних пробелов
+    $vars_for_replace = [];
+
+    // Добавляем parsed vars
+    foreach ($parsed_vars as $k => $v) {
+        $key = $k; // уже нормализован в openai_parse_prompt_variables
+        $vars_for_replace[$key] = $v;
+    }
+
+    // Добавляем стандартные переменные
+    $vars_for_replace['title'] = $site_title;
+    $vars_for_replace['letter'] = $letter;
+
+    // Иногда пользователь может в saved_prompt использовать английские ключи (Theme/Area)
+    // или русские (Тема/Локация). В parsed_vars ключи уже нормализованы, но могут быть 'тема' или 'theme'.
+    // Чтобы удобнее подставлять, продублируем некоторые ключи в английском варианте, если найдены русские.
+    // Например, если есть 'тема' -> продублируем в 'theme', если есть 'локация' -> 'area'
+    $duplicates_map = [
+        'тема' => 'theme',
+        'theme' => 'theme',
+        'локация' => 'area',
+        'area' => 'area',
+        'место' => 'area',
+        'город' => 'area',
+        'регион' => 'area'
+    ];
+    foreach ($duplicates_map as $src => $dest) {
+        if (isset($vars_for_replace[$src]) && !isset($vars_for_replace[$dest])) {
+            $vars_for_replace[$dest] = $vars_for_replace[$src];
+        }
+    }
+
+    // Также продублируем 'title' на 'site' и 'site_title' для удобства (если кто-то использует эти плейсхолдеры)
+    if (!isset($vars_for_replace['site'])) $vars_for_replace['site'] = $site_title;
+    if (!isset($vars_for_replace['site_title'])) $vars_for_replace['site_title'] = $site_title;
+
+    // Выполняем замену плейсхолдеров в системном промпте
+    $final_system_prompt = openai_replace_placeholders_in_hint($system_prompt_template, $vars_for_replace);
+
+    // Если после подстановки остались незаполненные плейсхолдеры (есть '{{'), добавляем saved_prompt как контекст в конец.
+    if (strpos($final_system_prompt, '{{') !== false) {
+        $final_system_prompt .= "\n\nContext from saved prompt:\n" . $saved_prompt;
+    }
+// логирование промта для отладки. потом удалю
+    if (function_exists('openai_auto_post_log')) {
+        openai_auto_post_log("Letter sent to model:\n" . $letter);
+    }
+
+    // Proxy настройки
     $proxy = [
         'url'      => get_option('openai_proxy'),
         'username' => get_option('openai_proxy_username'),
@@ -393,7 +676,11 @@ function openai_generate_post() {
         return '<div class="error"><p>Generation function not available.</p></div>';
     }
 
-    $content_result = openai_get_generation_gpt5mini($api_key, $prompt, 10240, $proxy);
+    // Отправляем итоговый системный промпт в модель.
+    // Заметьте: некоторые реализация используют 'system' + 'user' roles.
+    // Мы отправим system prompt (final_system_prompt) как system, а пустой user либо тот же final prompt.
+    // Поскольку openai_get_generation_gpt5mini ожидает $prompt — положим туда final_system_prompt.
+    $content_result = openai_get_generation_gpt5mini($api_key, $final_system_prompt, 10240, $proxy);
 
     if (is_string($content_result) && function_exists('openai_string_starts_with') && openai_string_starts_with($content_result, 'OpenAI API Error')) {
         if (function_exists('openai_auto_post_log')) {
@@ -402,7 +689,7 @@ function openai_generate_post() {
         return '<div class="error"><p>Failed to generate content: ' . esc_html($content_result) . '</p></div>';
     }
 
-    // Один раз форматируем ответ
+    // Форматируем ответ и извлекаем title/body как раньше.
     $formatted = format_response($content_result);
 
     [$article_title, $article_body] = extract_title_and_body($formatted);
@@ -441,7 +728,6 @@ function openai_generate_post() {
 
     return '<div class="updated"><p>Post generated and published successfully!</p></div>';
 }
-
 /**
  * Кастомный обработчик сохранения настроек — более строгая проверка прав
  */
