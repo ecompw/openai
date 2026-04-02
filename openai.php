@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.25
+ Version: 2.0.26
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -425,21 +425,39 @@ function openai_random_russian_letter() {
 function format_response($response) {
     $response = (string) $response;
 
-    // Жирный текст **text**
-    $response = preg_replace('/\*\*(.+?)\*\*/s', '<strong>$1</strong>', $response);
+    // Жирный текст text
+    $response = preg_replace('/\\(.+?)\\/s', '<strong>$1</strong>', $response);
 
-    // Заголовки — многострочный режим
-    // ### -> h3
+    /**
+     * Нормализация "псевдо-заголовков" вида:
+     * H2: Заголовок
+     * H3 - Заголовок
+     * H1 — Заголовок
+     *
+     * Важно: делаем ДО markdown-конвертации.
+     */
+    $response = preg_replace_callback(
+        '/^(H[1-6])\s[:\-—]\s(.+)$/mu',
+        static function (array $m): string {
+            $level = (int) substr($m[1], 1);
+            $text = trim($m[2]);
+
+            if ($text === '') {
+                return $m[0];
+            }
+
+            return sprintf('<h%d>%s</h%d>', $level, $text, $level);
+        },
+        $response
+    );
+
+    // Заголовки Markdown — многострочный режим
     $response = preg_replace('/^###\s*(.+)$/m', '<h3>$1</h3>', $response);
-    // ## -> h2
     $response = preg_replace('/^##\s*(.+)$/m', '<h2>$1</h2>', $response);
-    // # -> h1
     $response = preg_replace('/^#\s*(.+)$/m', '<h1>$1</h1>', $response);
-
-    // Можно добавить дополнительные правила (списки, ссылки и т.д.) если нужно
-
     return $response;
 }
+
 
 
 /**
@@ -571,6 +589,7 @@ CRITICAL OUTPUT RULE:
    - neutral, not clickbait
    - do NOT use: “взгляд”, “глазами”, “мнение”
    - do NOT mention any role/persona in the title
+   - DO NOT use a colon in the title
 
 ## Writing rules
 6) The article must read like a coherent essay: engaging opening → structured development → thoughtful ending.
