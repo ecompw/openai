@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.27
+ Version: 2.0.28
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -425,19 +425,16 @@ function openai_random_russian_letter() {
 function format_response($response) {
     $response = (string) $response;
 
-    // Жирный текст text
-    $response = preg_replace('/\\(.+?)\\/s', '<strong>$1</strong>', $response);
+    $response = preg_replace('/\*\*(.+?)\*\*/s', '<strong>$1</strong>', $response);
 
     /**
      * Нормализация "псевдо-заголовков" вида:
      * H2: Заголовок
      * H3 - Заголовок
      * H1 — Заголовок
-     *
-     * Важно: делаем ДО markdown-конвертации.
      */
     $response = preg_replace_callback(
-        '/^(H[1-6])\s[:\-—]\s(.+)$/mu',
+        '/^(H[1-6])\s*[:\-—]\s*(.+)$/mu',
         static function (array $m): string {
             $level = (int) substr($m[1], 1);
             $text = trim($m[2]);
@@ -455,6 +452,7 @@ function format_response($response) {
     $response = preg_replace('/^###\s*(.+)$/m', '<h3>$1</h3>', $response);
     $response = preg_replace('/^##\s*(.+)$/m', '<h2>$1</h2>', $response);
     $response = preg_replace('/^#\s*(.+)$/m', '<h1>$1</h1>', $response);
+
     return $response;
 }
 
@@ -473,6 +471,16 @@ function format_response($response) {
  */
 function extract_title_and_body($response_content) {
     $html = (string) $response_content;
+    // 0) Если модель вернула Markdown-заголовок, но HTML ещё не сформирован (или сформирован частично)
+    // Берём первую строку вида "# Заголовок"
+    if (preg_match('/^\s*#\s+(.+?)\s*$/mu', $html, $m)) {
+        $title = trim($m[1]);
+        if ($title !== '') {
+            // Удаляем только первое вхождение этой строки
+            $body = preg_replace('/^\s*#\s+.+?\s*$/mu', '', $html, 1);
+            return [$title, trim($body)];
+        }
+    }
 
     // 1) <title>...</title>
     if (preg_match('/<title>(.*?)<\/title>/is', $html, $m)) {
@@ -515,10 +523,16 @@ function extract_title_and_body($response_content) {
             // Пытаемся удалить первое вхождение этой строки из исходного $html
             $body = $html;
             // Ищем и удаляем первое вхождение $first_para (в виде plain text в HTML) — осторожно
-            $pos = mb_strpos($body, $first_para);
-            if ($pos !== false) {
-                // Удаляем первый фрагмент plain text из строки HTML (не идеально для всех случаев, но работает часто)
-                $body = mb_substr($body, 0, $pos) . mb_substr($body, $pos + mb_strlen($first_para));
+            if (function_exists('mb_strpos') && function_exists('mb_substr') && function_exists('mb_strlen')) {
+                $pos = mb_strpos($body, $first_para, 0, 'UTF-8');
+                if ($pos !== false) {
+                    $body = mb_substr($body, 0, $pos, 'UTF-8') . mb_substr($body, $pos + mb_strlen($first_para, 'UTF-8'), null, 'UTF-8');
+                }
+            } else {
+                $pos = strpos($body, $first_para);
+                if ($pos !== false) {
+                    $body = substr($body, 0, $pos) . substr($body, $pos + strlen($first_para));
+                }
             }
             return [$first_para, trim($body)];
         }
