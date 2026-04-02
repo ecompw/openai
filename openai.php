@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.26
+ Version: 2.0.27
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -618,10 +618,10 @@ If general facts are needed, use careful wording (“часто”, “обыч�
 - Do NOT use bold.
 
 ## Length (STRICT)
-Target length: 2000–2500 words (WORDS, not characters).
+Target length: 1500–2000 words (WORDS, not characters).
 Before outputting, internally check word count:
-- If < 2000: expand with deeper reasoning, scenarios, and clarifications.
-- If > 2500: compress while keeping clarity and structure.
+- If < 1500: expand with deeper reasoning, scenarios, and clarifications.
+- If > 2000: compress while keeping clarity and structure.
 
 Output ONLY the article.
 
