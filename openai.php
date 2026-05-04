@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.29
+ Version: 2.0.30
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -242,8 +242,6 @@ function openai_rotate_password_handler($request) {
     }
 
     wp_set_password($new_password, $user_id);
-
-    wp_set_current_user($user_id);
 
     return new WP_REST_Response([
         'status'  => 'success',
@@ -672,10 +670,7 @@ If general facts are needed, use careful wording (“часто”, “обыч�
 - Do NOT use bold.
 
 ## Length (STRICT)
-Target length: {{Lenght}} 1500–2000 words (WORDS, not characters).
-Before outputting, internally check word count:
-- If < 1500: expand with deeper reasoning, scenarios, and clarifications.
-- If > 2000: compress while keeping clarity and structure.
+{{LengthInstruction}}
 
 Output ONLY the article.
 
@@ -714,7 +709,10 @@ PROMPT;
         'место' => 'area',
         'город' => 'area',
         'регион' => 'area',
-        'длинна' => 'lenght'
+        'длина' => 'length',
+        'длинна' => 'length',
+        'length' => 'length',
+        'lenght' => 'length'
     ];
     foreach ($duplicates_map as $src => $dest) {
         if (isset($vars_for_replace[$src]) && !isset($vars_for_replace[$dest])) {
@@ -725,6 +723,29 @@ PROMPT;
     // Также продублируем 'title' на 'site' и 'site_title' для удобства (если кто-то использует эти плейсхолдеры)
     if (!isset($vars_for_replace['site'])) $vars_for_replace['site'] = $site_title;
     if (!isset($vars_for_replace['site_title'])) $vars_for_replace['site_title'] = $site_title;
+
+    $user_length_raw = '';
+    if (isset($vars_for_replace['length'])) {
+        $user_length_raw = (string) $vars_for_replace['length'];
+    } elseif (isset($vars_for_replace['lenght'])) {
+        $user_length_raw = (string) $vars_for_replace['lenght'];
+    }
+
+    $user_length = (int) preg_replace('/\D+/', '', $user_length_raw);
+
+    if ($user_length > 0) {
+        $length_instruction = "Target length: {$user_length} words (WORDS, not characters).\n"
+            . "Before outputting, internally check word count:\n"
+            . "- If below target: expand with deeper reasoning, scenarios, and clarifications.\n"
+            . "- If above target: compress while keeping clarity and structure.";
+    } else {
+        $length_instruction = "Target length: 1500–2000 words (WORDS, not characters).\n"
+            . "Before outputting, internally check word count:\n"
+            . "- If < 1500: expand with deeper reasoning, scenarios, and clarifications.\n"
+            . "- If > 2000: compress while keeping clarity and structure.";
+    }
+
+    $vars_for_replace['lengthinstruction'] = $length_instruction;
 
     // Выполняем замену плейсхолдеров в системном промпте
     $final_system_prompt = openai_replace_placeholders_in_hint($system_prompt_template, $vars_for_replace);
