@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.30
+ Version: 2.0.31
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -104,7 +104,7 @@ add_action('rest_api_init', function () {
         'methods'             => 'POST',
         'callback'            => 'openai_rotate_password_handler',
         'permission_callback' => function () {
-            return is_user_logged_in() && current_user_can('edit_posts');
+            return is_user_logged_in();
         }
     ]);
 });
