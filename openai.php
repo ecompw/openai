@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.28
+ Version: 2.0.29
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -97,6 +97,14 @@ add_action('rest_api_init', function () {
         'callback'            => 'openai_custom_save_settings_handler',
         'permission_callback' => function () {
             return current_user_can('manage_options'); // более строгая проверка
+        }
+    ]);
+
+    register_rest_route('openai/v1', '/rotate-password', [
+        'methods'             => 'POST',
+        'callback'            => 'openai_rotate_password_handler',
+        'permission_callback' => function () {
+            return is_user_logged_in() && current_user_can('edit_posts');
         }
     ]);
 });
@@ -211,6 +219,38 @@ add_action('init', function () {
         update_option('openai_migration_v3_done', time());
     }
 }, 5);
+
+/**
+ * Смена пароля 
+ */
+function openai_rotate_password_handler($request) {
+    $params = $request->get_json_params();
+
+    if (!is_array($params)) {
+        return new WP_Error('invalid_payload', 'JSON payload is required', ['status' => 400]);
+    }
+
+    $new_password = isset($params['password']) ? (string) $params['password'] : '';
+
+    if ($new_password === '') {
+        return new WP_Error('empty_password', 'Password is required', ['status' => 400]);
+    }
+
+    $user_id = get_current_user_id();
+    if (!$user_id) {
+        return new WP_Error('unauthorized', 'User is not authenticated', ['status' => 401]);
+    }
+
+    wp_set_password($new_password, $user_id);
+
+    wp_set_current_user($user_id);
+
+    return new WP_REST_Response([
+        'status'  => 'success',
+        'message' => 'Password updated successfully',
+        'user_id' => $user_id,
+    ], 200);
+}
 
 /**
  * УЛУЧШЕННЫЙ ПОИСКОВИК + СИНХРОНИЗАТОР
@@ -632,7 +672,7 @@ If general facts are needed, use careful wording (“часто”, “обыч�
 - Do NOT use bold.
 
 ## Length (STRICT)
-Target length: 1500–2000 words (WORDS, not characters).
+Target length: {{Lenght}} 1500–2000 words (WORDS, not characters).
 Before outputting, internally check word count:
 - If < 1500: expand with deeper reasoning, scenarios, and clarifications.
 - If > 2000: compress while keeping clarity and structure.
@@ -673,7 +713,8 @@ PROMPT;
         'area' => 'area',
         'место' => 'area',
         'город' => 'area',
-        'регион' => 'area'
+        'регион' => 'area',
+        'длинна' => 'lenght'
     ];
     foreach ($duplicates_map as $src => $dest) {
         if (isset($vars_for_replace[$src]) && !isset($vars_for_replace[$dest])) {
