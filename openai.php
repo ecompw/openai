@@ -3,7 +3,7 @@
  Plugin Name: OpenAI Auto Post
  Plugin URI: https://github.com/ecompw/openai
  Description: Automatically generates and publishes posts using OpenAI.
- Version: 2.0.31
+ Version: 2.0.32
  Author: Maksim Safianov
  License: GPL 3.0
  Text Domain: openai-auto-post
@@ -624,7 +624,10 @@ function openai_generate_post() {
     // Жёстко заданный системный промпт (прописываете его прямо в коде)
     $system_prompt_template = <<<'PROMPT'
 Write a ready-to-publish blog post for the {{Title}} website. Topic area: {{Theme}}. Target audience: readers from {{Area}}.
-LANGUAGE: Russian.
+LANGUAGE (STRICT): Russian only.
+- Every single word of the output — title, body, headings, tips — MUST be in Russian.
+- Do NOT switch to English at any point, even for individual words, terms, or examples. If a term is normally used in English (brand names, tech terms, etc.), transliterate or explain it in Russian instead of writing it in English.
+- Before finalizing, internally re-check the whole text and rewrite any English word or phrase into Russian.
 CRITICAL OUTPUT RULE:
 - Output ONLY the final article text.
 - Do NOT output planning, outlines, drafts, hidden reasoning, or any meta commentary.
@@ -660,8 +663,16 @@ If general facts are needed, use careful wording (“часто”, “обыч�
    - NO direct address to the reader (ban: “вы/вам/ваш/тебе/твой”)
    - prefer infinitives and neutral forms (e.g., “Сформулировать…”, “Проверять…”, “Сопоставлять…”)
 
+## Personal experience (one section)
+13) Include exactly one section (with an H2 heading, e.g. “Личный опыт”) written as a single paragraph of first-person personal experience:
+   - Base it on the persona chosen in step 1–2 and the specific topic chosen in step 4.
+   - Describe one concrete, believable situation, case, or observation from the persona's practice related to the topic — not a generic statement.
+   - Write it in first person (“я столкнулся…”, “в моей практике…”, “однажды я заметил…”) as the persona, without naming or describing the persona explicitly (no “как специалист X”, no profession label).
+   - Keep it grounded and specific: one small detail, one outcome or insight — avoid vague generalities.
+   - Do NOT invent exact statistics, dates, names of people/companies, or citations.
+
 ## Ending
-13) End with a calm summary of the practical value of the approach, without calls to action, without advice, and without broad generalizations.
+14) End with a calm summary of the practical value of the approach, without calls to action, without advice, and without broad generalizations.
 
 ## Formatting
 - Use Markdown in plain text (no code fences in the final output).

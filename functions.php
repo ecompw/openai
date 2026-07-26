@@ -40,7 +40,7 @@ function openai_get_generation_gpt5mini($api_key, $prompt, $max_output_tokens = 
     }
 
     $payload = [
-        'model' => 'gpt-5-mini',
+        'model' => 'gpt-5.4-nano',
         'input' => [
             ['role' => 'system', 'content' => 'You are an expert copywriter.'],
             ['role' => 'user', 'content' => $prompt],
